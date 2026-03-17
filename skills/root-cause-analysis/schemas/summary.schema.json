@@ -1,0 +1,117 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Analysis Summary",
+  "description": "Root cause summary from correlation analysis with AgnosticD/V configuration context",
+  "type": "object",
+  "required": ["job_id", "root_cause", "correlation", "evidence"],
+  "properties": {
+    "job_id": {
+      "type": "string"
+    },
+    "analyzed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "root_cause": {
+      "type": "object",
+      "required": ["summary", "category", "confidence"],
+      "properties": {
+        "summary": {
+          "type": "string",
+          "description": "One-line description of the root cause"
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "application_bug",
+            "infrastructure",
+            "configuration",
+            "dependency",
+            "network",
+            "resource",
+            "cloud_api",
+            "secrets",
+            "unknown"
+          ]
+        },
+        "confidence": {
+          "type": "string",
+          "enum": ["high", "medium", "low"]
+        }
+      }
+    },
+    "correlation": {
+      "type": "object",
+      "required": ["method", "identifiers"],
+      "properties": {
+        "method": {
+          "type": "string",
+          "description": "How AAP job was correlated to Splunk logs"
+        },
+        "identifiers": {
+          "type": "object",
+          "properties": {
+            "guid": {"type": "string"},
+            "namespace": {"type": "string"},
+            "pod_name": {"type": "string"}
+          }
+        },
+        "time_overlap": {
+          "type": "object",
+          "properties": {
+            "aap_job_start": {"type": "string"},
+            "aap_job_end": {"type": "string"},
+            "splunk_first_error": {"type": "string"},
+            "splunk_last_error": {"type": "string"},
+            "overlap_confirmed": {"type": "boolean"}
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["source", "timestamp", "message"],
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": ["aap_job", "splunk_ocp", "agnosticv_config", "agnosticd_code"]
+          },
+          "timestamp": {"type": "string"},
+          "message": {"type": "string"},
+          "github_path": {
+            "type": "string",
+            "description": "REQUIRED when source is agnosticv_config or agnosticd_code. Format: 'owner/repo:path/to/file.yml:line' (e.g., 'rhpds/agnosticv:openshift_cnv/account.yaml' or 'agnosticd/core_workloads:roles/ROLE/tasks/file.yml:123'). Extract from step4 github_fetches[].location.parsed or fetched_configs/fetched_workload paths."
+          }
+        }
+      }
+    },
+    "recommendations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "priority": {
+            "type": "string",
+            "enum": ["high", "medium", "low"]
+          },
+          "action": {"type": "string"},
+          "file": {"type": "string"},
+          "github_path": {
+            "type": "string",
+            "description": "GitHub path reference in format 'owner/repo:path/to/file.yml:line' (e.g., 'rhpds/agnosticv:openshift_cnv/account.yaml:42'). Extract from step4 data."
+          },
+          "github_url": {"type": "string"},
+          "change": {"type": "string"},
+          "details": {"type": "string"}
+        }
+      }
+    },
+    "contributing_factors": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  }
+}

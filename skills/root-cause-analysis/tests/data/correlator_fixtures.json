@@ -1,0 +1,210 @@
+{
+  "valid_json_logs": [
+    {
+      "_time": "2023-10-27T10:00:00Z",
+      "_raw_object": {
+        "message": "Pod started",
+        "kubernetes": {
+          "namespace_name": "test-ns",
+          "pod_name": "test-pod",
+          "container_name": "test-container"
+        }
+      }
+    }
+  ],
+  "flat_keys_logs": [
+    {
+      "_time": "2023-10-27T10:00:00Z",
+      "_raw": "{}",
+      "kubernetes.namespace_name": "flat-ns",
+      "kubernetes.pod_name": "flat-pod"
+    }
+  ],
+  "dedup_logs": [
+    {
+      "_raw_object": {
+        "kubernetes": {
+          "pod_name": "pod-1",
+          "namespace_name": "ns-1",
+          "container_name": "c1"
+        }
+      }
+    },
+    {
+      "_raw_object": {
+        "kubernetes": {
+          "pod_name": "pod-1",
+          "namespace_name": "ns-1",
+          "container_name": "c2"
+        }
+      }
+    },
+    {
+      "_raw_object": {
+        "kubernetes": {
+          "pod_name": "pod-2",
+          "namespace_name": "ns-1",
+          "container_name": "c1"
+        }
+      }
+    }
+  ],
+  "timeline_context": {
+    "job_id": "123",
+    "guid": "guid-1",
+    "namespace": "ns-1",
+    "time_window": {
+      "started": "2023-10-27T10:00:00Z",
+      "finished": "2023-10-27T10:10:00Z",
+      "duration_seconds": 600
+    },
+    "failed_tasks": [
+      {
+        "task": "Task 1",
+        "timestamp": "2023-10-27T10:05:00Z",
+        "error_message": "Failed"
+      }
+    ],
+    "pod_references": []
+  },
+  "timeline_splunk_logs": {
+    "ocp_logs": [],
+    "error_logs": [
+      {
+        "timestamp": "2023-10-27T10:06:00Z",
+        "message": "Error in pod",
+        "pod_name": "pod-1",
+        "container_name": "c1"
+      },
+      {
+        "timestamp": "2023-10-27T10:07:00Z",
+        "message": "Just info",
+        "pod_name": "pod-1"
+      }
+    ],
+    "pods_found": []
+  },
+  "analysis_context": {
+    "namespace": "ns-1",
+    "guid": "guid-1",
+    "time_window": {
+      "started": "2023-10-27T10:00:00Z",
+      "finished": "2023-10-27T10:10:00Z"
+    }
+  },
+  "analysis_splunk_logs": {
+    "ocp_logs": [
+      {
+        "timestamp": "2023-10-27T10:05:00Z"
+      }
+    ],
+    "pods_found": []
+  },
+  "guid_match_context": {
+    "namespace": "",
+    "guid": "guid-1",
+    "time_window": {
+      "started": "2023-10-27T10:00:00Z",
+      "finished": "2023-10-27T10:10:00Z"
+    }
+  },
+  "guid_match_splunk_logs": {
+    "ocp_logs": [
+      {
+        "timestamp": "2023-10-27T10:05:00Z"
+      }
+    ],
+    "pods_found": []
+  },
+  "pod_match_context": {
+    "namespace": "ns-1",
+    "time_window": {
+      "started": "2023-10-27T10:00:00Z",
+      "finished": "2023-10-27T10:10:00Z"
+    },
+    "pod_references": [
+      {
+        "pod_name": "pod-1"
+      }
+    ]
+  },
+  "pod_match_splunk_logs": {
+    "ocp_logs": [
+      {
+        "timestamp": "2023-10-27T11:00:00Z"
+      }
+    ],
+    "pods_found": [
+      {
+        "pod_name": "pod-1"
+      }
+    ]
+  },
+  "identifier_match_context": {
+    "namespace": "ns-1",
+    "time_window": {
+      "started": "2023-10-27T10:00:00Z",
+      "finished": "2023-10-27T10:10:00Z"
+    },
+    "pod_references": [
+      {
+        "pod_name": "pod-1"
+      }
+    ]
+  },
+  "identifier_match_splunk_logs": {
+    "ocp_logs": [
+      {
+        "timestamp": "2023-10-27T11:00:00Z"
+      }
+    ],
+    "pods_found": [
+      {
+        "pod_name": "pod-2"
+      }
+    ]
+  },
+  "no_match_context": {
+    "namespace": "",
+    "guid": "",
+    "time_window": {},
+    "pod_references": []
+  },
+  "no_match_splunk_logs": {
+    "ocp_logs": [],
+    "pods_found": []
+  },
+  "time_overlap_context": {
+    "time_window": {
+      "started": "2023-10-27T10:00:00Z",
+      "finished": "2023-10-27T11:00:00Z"
+    }
+  },
+  "time_disjoint_before_logs": {
+    "ocp_logs": [
+      {
+        "timestamp": "2023-10-27T09:00:00Z"
+      },
+      {
+        "timestamp": "2023-10-27T09:30:00Z"
+      }
+    ]
+  },
+  "time_disjoint_after_logs": {
+    "ocp_logs": [
+      {
+        "timestamp": "2023-10-27T11:30:00Z"
+      },
+      {
+        "timestamp": "2023-10-27T12:00:00Z"
+      }
+    ]
+  },
+  "time_overlap_logs": {
+    "ocp_logs": [
+      {
+        "timestamp": "2023-10-27T10:30:00Z"
+      }
+    ]
+  }
+}
