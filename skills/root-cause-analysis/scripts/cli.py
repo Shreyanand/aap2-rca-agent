@@ -44,6 +44,71 @@ def save_step(analysis_dir: Path, step: int, data: dict) -> Path:
     return output_path
 
 
+def upload_analysis_to_jumpbox(analysis_dir: Path, config: Config) -> bool:
+    """Upload analysis directory to Jumpbox in db_analysis/$SESSION_ID/."""
+    if not config.jumpbox_uri:
+        print("  Skipping upload: JUMPBOX_URI not configured")
+        return False
+
+    # Parse JUMPBOX_URI format: "user@host -p port"
+    parts = config.jumpbox_uri.split()
+    if len(parts) < 1:
+        print("  Error: Invalid JUMPBOX_URI format")
+        return False
+
+    ssh_target = parts[0]  # user@host
+    ssh_port = None
+
+    # Extract port if present
+    if "-p" in parts:
+        try:
+            port_idx = parts.index("-p")
+            if port_idx + 1 < len(parts):
+                ssh_port = parts[port_idx + 1]
+        except (ValueError, IndexError):
+            pass
+
+    session_id = os.environ.get("CLAUDE_SESSION_ID", "unknown")
+    remote_base_dir = f"db_analysis/{session_id}"
+    job_id = analysis_dir.name
+
+    # Build SSH command
+    ssh_cmd = ["ssh"]
+    if ssh_port:
+        ssh_cmd.extend(["-p", ssh_port])
+    ssh_cmd.extend([ssh_target, f"mkdir -p {remote_base_dir}"])
+
+    # Create remote directory structure
+    try:
+        subprocess.run(
+            ssh_cmd,
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        print(f"  Error creating remote directory: {e}")
+        return False
+
+    # Upload analysis directory using rsync
+    try:
+        rsync_cmd = ["rsync"]
+        if ssh_port:
+            rsync_cmd.extend(["-e", f"ssh -p {ssh_port}"])
+        rsync_cmd.extend(["-az", "--quiet", str(analysis_dir), f"{ssh_target}:{remote_base_dir}/"])
+
+        subprocess.run(
+            rsync_cmd,
+            check=True,
+            timeout=60,
+        )
+        print(f"  Uploaded to Jumpbox ({ssh_target}): {remote_base_dir}/{job_id}/")
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        print(f"  Error uploading to Jumpbox: {e}")
+        return False
+
+
 def get_step_name(step: int) -> str:
     """Get descriptive name for step."""
     names = {
@@ -316,15 +381,14 @@ def cmd_query(args: argparse.Namespace, config: Config, span=None):
     """Run ad-hoc Splunk query."""
     from .splunk_client import SplunkClient
 
+    errors = config.validate_splunk()
+    if errors:
+        print(f"Error: {', '.join(errors)}")
+        return 1
+
+    client = SplunkClient(config)
+
     try:
-        errors = config.validate_splunk()
-        if errors:
-            error_message = f"Splunk configuration invalid: {', '.join(errors)}"
-            print(f"Error: {error_message}")
-            return {"error": error_message}
-
-        client = SplunkClient(config)
-
         results = client.query(
             args.query,
             earliest=args.earliest,
@@ -342,22 +406,11 @@ def cmd_query(args: argparse.Namespace, config: Config, span=None):
                 raw = r.get("_raw", "")[:200]
                 print(f"{r.get('_time', '')}: {raw}")
 
-        outputs = {
-            "results_count": len(results),
-            "query": args.query,
-            "earliest": args.earliest,
-            "latest": args.latest,
-            "output_file": args.output or "stdout",
-        }
-        if span:
-            span.set_outputs(outputs)
-
-        return outputs
-
     except Exception as e:
-        error_message = f"Query failed: {e}"
-        print(error_message)
-        return {"error": error_message}
+        print(f"Query failed: {e}")
+        return 1
+
+    return 0
 
 
 def cmd_status(args: argparse.Namespace, config: Config, span=None):
@@ -383,6 +436,36 @@ def cmd_status(args: argparse.Namespace, config: Config, span=None):
 
     return 0
 
+    for step in [1, 2, 3, 4, 5]:
+        filename = f"step{step}_{get_step_name(step)}.json"
+        path = analysis_dir / filename
+        if path.exists():
+            _ = load_step(analysis_dir, step)
+            size = path.stat().st_size
+            print(f"  [x] Step {step}: {filename} ({size} bytes)")
+        else:
+            print(f"  [ ] Step {step}: {filename}")
+
+    return 0
+
+
+def _run_session_start_hook(base_dir: Path):
+    """Run MLflow autolog setup."""
+    try:
+        tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000")
+        experiment_name = os.environ.get("MLFLOW_EXPERIMENT_NAME", "Default")
+
+        result = subprocess.run(
+            ["mlflow", "autolog", "claude", "-u", tracking_uri, "-n", experiment_name],
+            cwd=str(base_dir),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0 and result.stdout:
+            print(f"\n{result.stdout.strip()}")
+    except Exception:
+        pass
 
 @trace(name="root-cause-analysis", span_type=SpanType.TOOL if SpanType else None)
 def main():
@@ -454,7 +537,9 @@ def main():
         "status": cmd_status,
     }
 
-    return commands[args.command](args, config, span)
+    outputs = commands[args.command](args, config, span)
+    _run_session_start_hook(base_dir)
+    return outputs
 
 
 if __name__ == "__main__":
