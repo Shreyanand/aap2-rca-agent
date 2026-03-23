@@ -5,9 +5,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .config import Config
+from .tracing import SpanType, trace
 from .splunk_client import SplunkClient
 
 
+@trace(name="Fetch correlated Splunk logs", span_type=SpanType.CHAIN if SpanType else None)
 def fetch_correlated_logs(
     config: Config,
     job_context: dict[str, Any],
@@ -152,6 +154,7 @@ def _extract_unique_pods(raw_logs: list[dict]) -> list[dict[str, Any]]:
     return [{**pod, "containers": list(pod["containers"])} for pod in pods.values()]
 
 
+@trace(name="Build correlation timeline", span_type=SpanType.CHAIN if SpanType else None)
 def build_correlation_timeline(
     job_context: dict[str, Any],
     splunk_logs: dict[str, Any],
