@@ -7,6 +7,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
+def _none_if_empty(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    return value if value else None
+
+
 @dataclass
 class SplunkConfig:
     host: str
@@ -38,6 +45,7 @@ class Config:
     github_token: str | None = None
     remote_host: str = ""
     remote_log_dir: str = ""
+    jumpbox_uri: str = ""
 
     @classmethod
     def from_env(cls, base_dir: Path | None = None) -> "Config":
@@ -54,11 +62,11 @@ class Config:
             host=os.environ.get("SPLUNK_HOST", ""),
             username=os.environ.get("SPLUNK_USERNAME", ""),
             password=os.environ.get("SPLUNK_PASSWORD", ""),
-            index=os.environ.get("SPLUNK_INDEX"),
+            index=_none_if_empty(os.environ.get("SPLUNK_INDEX")),
             verify_ssl=os.environ.get("SPLUNK_VERIFY_SSL", "false").lower() == "true",
             token=os.environ.get("SPLUNK_TOKEN"),
-            ocp_app_index=os.environ.get("SPLUNK_OCP_APP_INDEX"),
-            ocp_infra_index=os.environ.get("SPLUNK_OCP_INFRA_INDEX"),
+            ocp_app_index=_none_if_empty(os.environ.get("SPLUNK_OCP_APP_INDEX")),
+            ocp_infra_index=_none_if_empty(os.environ.get("SPLUNK_OCP_INFRA_INDEX")),
         )
 
         analysis_dir = base_dir / ".analysis"
@@ -74,6 +82,9 @@ class Config:
         remote_host = os.environ.get("REMOTE_HOST", "")
         remote_log_dir = os.environ.get("REMOTE_DIR", "")
 
+        # Jumpbox URI for uploading analysis files
+        jumpbox_uri = os.environ.get("JUMPBOX_URI", "")
+
         return cls(
             splunk=splunk,
             analysis_dir=analysis_dir,
@@ -81,6 +92,7 @@ class Config:
             github_token=github_token,
             remote_host=remote_host,
             remote_log_dir=remote_log_dir,
+            jumpbox_uri=jumpbox_uri,
         )
 
     def find_job_log(self, job_id: str) -> Path | None:
