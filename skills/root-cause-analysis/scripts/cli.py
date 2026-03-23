@@ -8,9 +8,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import mlflow
-from mlflow.entities import SpanType
-
 # Support both module and direct execution
 if __name__ == "__main__" and __package__ is None:
     # Running directly as scripts/cli.py - add parent to path
@@ -20,6 +17,7 @@ if __name__ == "__main__" and __package__ is None:
     from scripts.job_parser import parse_job_log
     from scripts.log_fetcher import fetch_job_log
     from scripts.step4_fetch_github import GitHubClient, Step4Analyzer
+    from scripts.tracing import HAS_MLFLOW, SpanType, mlflow, trace
 else:
     # Running as module (-m scripts.cli)
     from .config import Config
@@ -27,6 +25,7 @@ else:
     from .job_parser import parse_job_log
     from .log_fetcher import fetch_job_log
     from .step4_fetch_github import GitHubClient, Step4Analyzer
+    from .tracing import HAS_MLFLOW, SpanType, mlflow, trace
 
 
 def get_analysis_dir(config: Config, job_id: str) -> Path:
@@ -34,6 +33,7 @@ def get_analysis_dir(config: Config, job_id: str) -> Path:
     analysis_dir = config.analysis_dir / job_id
     analysis_dir.mkdir(parents=True, exist_ok=True)
     return analysis_dir
+
 
 def save_step(analysis_dir: Path, step: int, data: dict) -> Path:
     """Save step output to JSON file."""
@@ -131,13 +131,14 @@ def load_step(analysis_dir: Path, step: int) -> dict | None:
     return None
 
 
-@mlflow.trace(name="Run full analysis", span_type=SpanType.CHAIN)
+@trace(name="Run full analysis", span_type=SpanType.CHAIN if SpanType else None)
 def cmd_analyze(args: argparse.Namespace, config: Config, span=None) -> int:
     """Run full analysis pipeline."""
     # --fetch only makes sense with --job-id, not --job-log
     if getattr(args, "fetch", False) and not args.job_id:
-        print("Error: --fetch requires --job-id (it has no effect with --job-log)")
-        return 1
+        error_message = "--fetch requires --job-id (it has no effect with --job-log)"
+        print(f"Error: {error_message}")
+        return {"error": error_message}
 
     # Determine job log path - either from --job-log or by searching with --job-id
     if args.job_log:
@@ -150,11 +151,13 @@ def cmd_analyze(args: argparse.Namespace, config: Config, span=None) -> int:
         elif args.fetch:
             # Auto-fetch from remote server
             if not config.remote_host or not config.remote_log_dir:
-                print("Error: --fetch requires REMOTE_HOST and REMOTE_DIR in settings")
-                return 1
+                error_message = "--fetch requires REMOTE_HOST and REMOTE_DIR in settings"
+                print(f"Error: {error_message}")
+                return {"error": error_message}
             if not config.job_logs_dir:
-                print("Error: --fetch requires JOB_LOGS_DIR to be configured")
-                return 1
+                error_message = "--fetch requires JOB_LOGS_DIR to be configured"
+                print(f"Error: {error_message}")
+                return {"error": error_message}
             print("[Fetch] Job log not found locally, fetching from remote...")
             try:
                 fetch_job_log(
@@ -165,35 +168,39 @@ def cmd_analyze(args: argparse.Namespace, config: Config, span=None) -> int:
                 subprocess.CalledProcessError,
                 subprocess.TimeoutExpired,
             ) as e:
-                print(f"Error: Failed to fetch log: {e}")
-                return 1
+                error_message = f"Failed to fetch log: {e}"
+                print(f"Error: {error_message}")
+                return {"error": error_message}
             job_log_path = config.find_job_log(args.job_id)
             if not job_log_path:
-                print(f"Error: Log fetched but not found in {config.job_logs_dir}")
-                return 1
+                error_message = f"Log fetched but not found in {config.job_logs_dir}"
+                print(f"Error: {error_message}")
+                return {"error": error_message}
             print(f"Found job log: {job_log_path}")
         else:
             if config.job_logs_dir:
-                print(f"Error: No log file found for job {args.job_id} in {config.job_logs_dir}")
-                print("  Hint: Use --fetch to automatically download from remote server")
+                error_message = f"No log file found for job {args.job_id} in {config.job_logs_dir}. Hint: Use --fetch to automatically download from remote server"
+                print(error_message)
             else:
-                print(
-                    "Error: JOB_LOGS_DIR not configured. Set it in environment variables (.claude/settings.json) or use --job-log"
-                )
-            return 1
+                error_message = "JOB_LOGS_DIR not configured. Set it in environment variables (.claude/settings.json) or use --job-log"
+                print(f"Error: {error_message}")
+            return {"error": error_message}
     else:
-        print("Error: Either --job-log or --job-id is required")
-        return 1
+        error_message = "Either --job-log or --job-id is required"
+        print(f"Error: {error_message}")
+        return {"error": error_message}
 
     if not job_log_path.exists():
-        print(f"Error: Job log file not found: {job_log_path}")
-        return 1
+        error_message = f"Job log file not found: {job_log_path}"
+        print(f"Error: {error_message}")
+        return {"error": error_message}
 
     # Validate Splunk config
     errors = config.validate_splunk()
     if errors:
-        print(f"Error: Splunk configuration invalid: {', '.join(errors)}")
-        return 1
+        error_message = f"Splunk configuration invalid: {', '.join(errors)}"
+        print(f"Error: {error_message}")
+        return {"error": error_message}
 
     # GitHub token validation will be done at Step 4 (where it's actually needed)
     github_errors = config.validate_github()
@@ -252,7 +259,7 @@ def cmd_analyze(args: argparse.Namespace, config: Config, span=None) -> int:
     print("\n[Step 4] Fetching GitHub files...")
     step4_path = None
     if github_errors:
-        print("  Skipped: GitHub token not configured")
+        print("Skipped: GitHub token not configured")
         step4_result = {
             "job_id": job_id,
             "skipped": True,
@@ -270,12 +277,9 @@ def cmd_analyze(args: argparse.Namespace, config: Config, span=None) -> int:
             print(f"  GitHub fetches: {len(step4_result.get('github_fetches', []))}")
             print(f"  Output: {step4_path}")
         except Exception as e:
-            print(f"  Error fetching GitHub files: {e}")
-            return 1
-
-    # Upload analysis to Jumpbox
-    print("\n[Upload] Uploading analysis to Jumpbox...")
-    upload_analysis_to_jumpbox(analysis_dir, config)
+            error_message = f"Error fetching GitHub files: {e}"
+            print(f"  {error_message}")
+            return {"error": error_message}
 
     # Print summary
     print("\n" + "=" * 60)
@@ -296,7 +300,18 @@ def cmd_analyze(args: argparse.Namespace, config: Config, span=None) -> int:
         print("-" * 60)
         _print_quick_summary(job_context, splunk_logs, correlation)
 
-    return 0
+    outputs = {
+        "job_id": job_id,
+        "status": job_context.get("status"),
+        "correlation_confidence": corr.get("confidence"),
+        "failed_tasks": len(job_context.get("failed_tasks", [])),
+        "pods_found": len(splunk_logs.get("pods_found", [])),
+        "analysis_dir": str(analysis_dir),
+    }
+    if span:
+        span.set_outputs(outputs)
+    return outputs
+
 
 def _print_quick_summary(job_context: dict, splunk_logs: dict, correlation: dict):
     """Print a quick summary of the analysis."""
@@ -331,14 +346,15 @@ def _print_quick_summary(job_context: dict, splunk_logs: dict, correlation: dict
     print(f"\nCorrelation: {corr.get('method')} ({corr.get('confidence')} confidence)")
 
 
-@mlflow.trace(name="Parse job log", span_type=SpanType.CHAIN)
+@trace(name="Parse job log", span_type=SpanType.CHAIN if SpanType else None)
 def cmd_parse(args: argparse.Namespace, config: Config, span=None):
     """Parse job log only (Step 1)."""
     job_log_path = Path(args.job_log)
 
     if not job_log_path.exists():
-        print(f"Error: Job log file not found: {job_log_path}")
-        return 1
+        error_message = f"Job log file not found: {job_log_path}"
+        print(f"Error: {error_message}")
+        return {"error": error_message}
 
     job_context = parse_job_log(job_log_path)
 
@@ -349,10 +365,18 @@ def cmd_parse(args: argparse.Namespace, config: Config, span=None):
     else:
         print(json.dumps(job_context, indent=2, default=str))
 
-    return 0
+    outputs = {
+        "job_id": job_context.get("job_id"),
+        "status": job_context.get("status"),
+        "output_file": args.output or "stdout",
+    }
+    if span:
+        span.set_outputs(outputs)
+
+    return outputs
 
 
-@mlflow.trace(name="Run Splunk query", span_type=SpanType.RETRIEVER)
+@trace(name="Run Splunk query", span_type=SpanType.RETRIEVER if SpanType else None)
 def cmd_query(args: argparse.Namespace, config: Config, span=None):
     """Run ad-hoc Splunk query."""
     from .splunk_client import SplunkClient
@@ -389,17 +413,28 @@ def cmd_query(args: argparse.Namespace, config: Config, span=None):
     return 0
 
 
-@mlflow.trace(name="Show analysis status", span_type=SpanType.PARSER)
 def cmd_status(args: argparse.Namespace, config: Config, span=None):
     """Show analysis status for a job."""
     analysis_dir = config.analysis_dir / args.job_id
 
     if not analysis_dir.exists():
-        print(f"No analysis found for job {args.job_id}")
-        return 1
+        error_message = f"No analysis found for job {args.job_id}"
+        print(error_message)
+        return {"error": error_message}
 
     print(f"Analysis directory: {analysis_dir}")
     print("\nSteps:")
+
+    for step in [1, 2, 3, 4, 5]:
+        filename = f"step{step}_{get_step_name(step)}.json"
+        path = analysis_dir / filename
+        if path.exists():
+            size = path.stat().st_size
+            print(f"  [x] Step {step}: {filename} ({size} bytes)")
+        else:
+            print(f"  [ ] Step {step}: {filename}")
+
+    return 0
 
     for step in [1, 2, 3, 4, 5]:
         filename = f"step{step}_{get_step_name(step)}.json"
@@ -432,7 +467,7 @@ def _run_session_start_hook(base_dir: Path):
     except Exception:
         pass
 
-@mlflow.trace(name="root-cause-analysis", span_type=SpanType.TOOL)
+@trace(name="root-cause-analysis", span_type=SpanType.TOOL if SpanType else None)
 def main():
     parser = argparse.ArgumentParser(
         description="Splunk Log Analysis - Correlate AAP job logs with Splunk OCP logs"
@@ -475,28 +510,25 @@ def main():
     # Load config
     base_dir = Path(__file__).parent.parent
     config = Config.from_env(base_dir)
-    # Initialize tracer if available
-    mlflow.update_current_trace(
-        metadata={
-            "mlflow.trace.session": f"{os.environ.get('CLAUDE_SESSION_ID')}",
-            "mlflow.trace.user": os.environ.get("MLFLOW_TAG_USER"),
-            "mlflow.source.name": "root-cause-analysis",
-            "mlflow.source.git.repoURL": "https://github.com/redhat-et/aiops-skills/blob/main/skills/root-cause-analysis/SKILL.md",
-        },
-    )
-
-    inputs = {
-        "request": f"root-cause-analysis {args.command} {args} ",
-        "job_id": str(getattr(args, "job_id", None)),
-        "job_log": str(getattr(args, "job_log", None)),
-        "query": getattr(args, "query", None),
-        "earliest": getattr(args, "earliest", None),
-        "latest": getattr(args, "latest", None),
-        "max_results": getattr(args, "max_results", None),
-        "command": args.command,
-    }
-    span = mlflow.get_current_active_span()
-    span.set_inputs(inputs)
+    span = None
+    if HAS_MLFLOW:
+        mlflow.update_current_trace(
+            metadata={
+                "mlflow.trace.session": f"{os.environ.get('CLAUDE_SESSION_ID')}",
+                "mlflow.trace.user": os.environ.get("MLFLOW_TAG_USER"),
+                "mlflow.source.name": "root-cause-analysis",
+            },
+        )
+        span = mlflow.get_current_active_span()
+        if span:
+            span.set_inputs(
+                {
+                    "request": f"root-cause-analysis {args.command} {args} ",
+                    "job_id": str(getattr(args, "job_id", None)),
+                    "job_log": str(getattr(args, "job_log", None)),
+                    "command": args.command,
+                }
+            )
     # Dispatch command
     commands = {
         "analyze": cmd_analyze,
