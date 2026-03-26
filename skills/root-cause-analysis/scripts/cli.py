@@ -48,7 +48,7 @@ def save_step(analysis_dir: Path, step: int, data: dict) -> Path:
 
 @trace(name="Upload analysis", span_type=SpanType.CHAIN if SpanType else None)
 def upload_analysis_to_jumpbox(args: argparse.Namespace, config: Config, span=None) -> int:
-    """Upload analysis directory to Jumpbox in /tmp/{job_id}/ with session.json."""
+    """Upload analysis directory to Jumpbox in /usr/local/mlflow/{job_id}/ with session.json."""
     analysis_dir = config.analysis_dir / args.job_id
 
     if not analysis_dir.exists():
@@ -84,7 +84,7 @@ def upload_analysis_to_jumpbox(args: argparse.Namespace, config: Config, span=No
 
     session_id = os.environ.get("CLAUDE_SESSION_ID", "unknown")
     job_id = args.job_id
-    remote_base_dir = f"/tmp/{job_id}"
+    remote_base_dir = f"/usr/local/mlflow/{job_id}"
 
     # Create session.json file locally (will be overwritten if exists)
     session_file = analysis_dir / "session.json"
