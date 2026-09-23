@@ -205,8 +205,6 @@ flowchart TD
     style F3a fill:#ffe0b2
 ```
 
-Full diagram source: [`deploy/batch-rca-automation/docs/batch-rca-flow.md`](deploy/batch-rca-automation/docs/batch-rca-flow.md).
-
 ## Performance
 
 | Metric | Value |
