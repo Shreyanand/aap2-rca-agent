@@ -1,0 +1,46 @@
+{
+  "metadata": {
+    "job_metadata": {
+      "job_id": "12345",
+      "job_name": "Test Job",
+      "guid": "test-guid-abc",
+      "status": "failed",
+      "started": "2023-10-27T10:00:00Z",
+      "finished": "2023-10-27T10:05:00Z",
+      "duration_seconds": 300,
+      "sandbox_openshift_cluster": "test-cluster",
+      "cloud_provider": "aws",
+      "env_type": "sandbox",
+      "action": "provision"
+    }
+  },
+  "events": [
+    {
+      "event": "runner_on_ok",
+      "stdout": "namespace: sandbox-test-namespace",
+      "created": "2023-10-27T10:01:00Z"
+    },
+    {
+      "event": "runner_on_ok",
+      "stdout": "pod/test-pod-abc-123 created",
+      "task": "Create Pod",
+      "created": "2023-10-27T10:02:00Z"
+    },
+    {
+      "event": "runner_on_failed",
+      "failed": true,
+      "task": "Install dependencies",
+      "play": "Setup",
+      "role": "common",
+      "created": "2023-10-27T10:04:00Z",
+      "event_data": {
+        "res": {
+          "msg": "Package not found"
+        },
+        "task_action": "yum",
+        "duration": 5.2,
+        "task_path": "/path/to/task.yml"
+      }
+    }
+  ]
+}
