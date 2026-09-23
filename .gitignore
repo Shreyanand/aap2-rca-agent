@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Analysis output (may contain job logs, credentials, customer data)
+.analysis/
+
+# Claude Code local settings (may contain tokens/secrets)
+.claude/settings.local.json
+.claude/mcp.json
+
+# Environment files
+.env
+.env.*
+
+# Node
+node_modules/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
