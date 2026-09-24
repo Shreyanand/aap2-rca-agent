@@ -42,59 +42,11 @@ Review the JSON output. Some settings are required, others are optional:
 - **Splunk** not configured: Steps 2-3 (log correlation) will be skipped
 - **GitHub token** not configured: Step 4 (config fetching) will be skipped
 
-#### Interactive Setup for Missing Configs
+#### Missing Configuration
 
-If any checks have `"status": "missing"` and `"configurable": true`, offer to help the user configure them:
-
-1. List the missing configurable items grouped by check name
-2. Ask: "Would you like me to help configure these? I'll walk you through each one."
-3. If yes, for each missing check with `"configurable": true`:
-   - Show the check name and each `env_vars[].prompt` to explain what's needed
-   - If the env var has a `"default"`, mention it (user can press enter to accept)
-   - If the env var has `"optional": true`, let the user know they can skip it
-   - Ask the user for the value
-   - **SSH special handling**: If the SSH check has `"ssh_setup_needed": true`:
-     - Ask the user for their SSH host alias name
-     - Check if that alias already exists in `~/.ssh/config` -- if so, use it as `REMOTE_HOST`
-     - If it doesn't exist, ask: do you want to create a new SSH config entry? If yes, ask for: hostname, username, port (default 22), and optional identity file path
-     - Read `~/.ssh/config`, append the new `Host` block, and write it back
-     - Then set `REMOTE_HOST` to the alias name
-4. After collecting all values, read the project's `.claude/settings.json` file
-5. Merge the new values into the `"env"` block (create it if it doesn't exist)
-6. If MLflow env vars were configured (MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT_NAME), also add the required MLflow hooks to the `"hooks"` block (create it if it doesn't exist):
-   ```json
-   "hooks": {
-     "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "INPUT=$(cat); SESSION_ID=$(echo \"$INPUT\" | jq -r '.session_id'); echo \"export CLAUDE_SESSION_ID='$SESSION_ID'\" >> \"$CLAUDE_ENV_FILE\""
-          },
-          {
-            "type": "command",
-            "command": "if [ \"$MLFLOW_CLAUDE_TRACING_ENABLED\" = \"true\" ]; then if ! pip show mlflow >/dev/null 2>&1; then pip install mlflow; fi; fi"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python -c \"from mlflow.claude_code.hooks import stop_hook_handler; stop_hook_handler()\""
-          }
-        ]
-      }
-    ]
-   }
-   ```
-7. Write the updated settings file
-8. Tell the user to **restart the Claude Code session** for env vars and hooks to take effect
-9. **Important**: Write secrets (tokens, passwords) to `.claude/settings.json` -- ensure this file is in `.gitignore`
-
-If checks show non-configurable errors (e.g., venv issues, rsync not found), provide the fix command instead.
+If any check has `"status": "missing"` or `"status": "error"`, do **not**
+attempt to configure it, ask a question, or wait. Go straight to the failure
+path below.
 
 #### MLFlow Server Startup
 
@@ -103,7 +55,7 @@ The `MLFlow server` preflight check automatically handles server connectivity:
 - If the tunnel is already running, it skips startup
 - If the tunnel fails, it reports the error but the skill can still proceed (MLFlow is recommended, not required)
 
-If any **required** checks (JOB_LOGS_DIR, JUMPBOX_URI) are still missing after the setup flow, do **not** proceed to analysis -- tell the user what's still needed. If MLFlow is missing, warn that tracing won't be recorded but proceed. If all required checks pass (recommended/optional items may remain missing), proceed to analysis.
+If any **required** checks (JOB_LOGS_DIR, JUMPBOX_URI) are missing or errored, do **not** proceed to analysis. Stop and report failure for this job: state the job ID, `status: failed`, and the failing check name(s) with their `message` field(s) from the `setup --json` output. If MLFlow is missing, warn that tracing won't be recorded but proceed. If all required checks pass (recommended/optional items may remain missing), proceed to analysis.
 
 ### Step 1-4: Run the analysis CLI
 

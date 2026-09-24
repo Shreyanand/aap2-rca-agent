@@ -10,6 +10,8 @@ Use this skill when you need to:
 - Troubleshoot Kubernetes/OpenShift problems
 - Analyze AgnosticD/AgnosticV configuration issues
 
+In this repo, this skill is invoked by the [batch automation](../../deploy/batch-rca-automation/README.md), one job per background agent. The setup and `cli.py` commands below are for local development and debugging.
+
 ## Overview
 
 This skill uses automated Python scripts for data collection (Steps 1-4) and Claude for analysis (Step 5):
@@ -112,7 +114,7 @@ Required GitHub MCP tools:
 - `mcp__github__get_file_contents` — Check parent directories and verify file existence
 - `mcp__github__search_code` — Locate files when paths fail
 
-## Usage
+## Manual / Debugging Usage
 
 ### Complete Analysis Workflow
 

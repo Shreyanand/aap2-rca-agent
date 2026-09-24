@@ -12,7 +12,7 @@ This repo has two parts:
 
 | Path | What it is |
 |------|------------|
-| [`skills/root-cause-analysis/`](skills/root-cause-analysis/README.md) | The Claude Code skill: given one failed job, parses the log, queries Splunk, correlates events, fetches relevant GitHub config/code, and produces a root cause summary. Usable standalone in any Claude Code session. |
+| [`skills/root-cause-analysis/`](skills/root-cause-analysis/README.md) | The Claude Code skill: given one failed job, parses the log, queries Splunk, correlates events, fetches relevant GitHub config/code, and produces a root cause summary. Invoked by the batch automation, one job per background agent. |
 | [`deploy/`](deploy) | Everything needed to run the skill continuously in production: a `Dockerfile`, a Helm chart for an OpenShift `CronJob`, and [`batch-rca-automation/`](deploy/batch-rca-automation/README.md), the orchestration scripts that fetch failed jobs, dedupe/pre-filter them, spawn parallel Claude Code agents, and persist results to a database. |
 
 ## Architecture
@@ -239,9 +239,9 @@ for the full file breakdown.
 
 ## Getting started
 
-- **Run RCA on a single job interactively:** see
+- **Run or debug RCA for a single job manually:** see
   [`skills/root-cause-analysis/README.md`](skills/root-cause-analysis/README.md)
-  for setup (env vars, SSH, Splunk, GitHub) and usage
+  for setup (env vars, SSH, Splunk, GitHub) and manual usage
   (`cli.py analyze --job-id ...`).
 - **Deploy the batch CronJob:** see
   [`deploy/batch-rca-automation/README.md`](deploy/batch-rca-automation/README.md)
