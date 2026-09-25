@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 # Placeholder pattern -- values that haven't been configured yet
@@ -17,46 +18,36 @@ def is_placeholder(value: str | None) -> bool:
     return value.strip().startswith(PLACEHOLDER_PATTERN)
 
 
-def check_python_venv(base_dir: Path) -> dict:
-    """Check if Python venv exists and dependencies are installed."""
-    venv_dir = base_dir / ".venv"
-    if not venv_dir.exists():
-        return {
-            "name": "Python venv",
-            "status": "missing",
-            "message": ".venv not found. Run: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt",
-        }
+def check_python_venv(project_root: Path) -> dict:
+    """Check that the active or repository-root Python has project dependencies."""
+    venv_dir = project_root / ".venv"
+    python = venv_dir / "bin" / "python"
+    python = python if python.exists() else Path(sys.executable)
 
-    pip = venv_dir / "bin" / "pip"
-    if not pip.exists():
-        return {
-            "name": "Python venv",
-            "status": "error",
-            "message": ".venv exists but pip not found. Recreate: rm -rf .venv && python3 -m venv .venv",
-        }
-
-    # Check if key dependencies are installed
     try:
         result = subprocess.run(
-            [str(pip), "show", "requests", "python-dotenv", "PyYAML"],
+            [str(python), "-c", "import dotenv, psycopg2, requests, yaml"],
             capture_output=True,
             text=True,
             timeout=10,
         )
         if result.returncode != 0:
             return {
-                "name": "Python venv",
+                "name": "Python dependencies",
                 "status": "missing",
-                "message": "Dependencies not installed. Run: .venv/bin/pip install -r requirements.txt",
+                "message": (
+                    "Install the shared dependencies from the repository root: "
+                    "python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
+                ),
             }
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return {
-            "name": "Python venv",
+            "name": "Python dependencies",
             "status": "error",
-            "message": "Could not check dependencies",
+            "message": f"Could not check Python dependencies using {python}",
         }
 
-    return {"name": "Python venv", "status": "ok", "message": f"{venv_dir}"}
+    return {"name": "Python dependencies", "status": "ok", "message": str(python)}
 
 
 def check_job_logs_dir() -> dict:
@@ -587,7 +578,7 @@ def run_checks(base_dir: Path, repo_root: Path | None = None) -> list[dict]:
         repo_root = base_dir.parent.parent
 
     return [
-        check_python_venv(base_dir),
+        check_python_venv(repo_root),
         check_job_logs_dir(),
         check_jumpbox(),
         check_ssh(),

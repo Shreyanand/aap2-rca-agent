@@ -20,6 +20,12 @@ set -euo pipefail
 #
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -d "$SCRIPT_DIR/common" ]; then
+  PROJECT_ROOT="$SCRIPT_DIR"
+else
+  PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+fi
+export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 REPORT_DIR="$SCRIPT_DIR/reports"
 SO_SCHEMA_FILE="$SCRIPT_DIR/schemas/batch_report.structured_output.schema.json"
 TIMESTAMP=$(date -u +%Y%m%d_%H%M%S)

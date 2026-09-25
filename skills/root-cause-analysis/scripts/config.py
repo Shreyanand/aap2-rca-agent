@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
+from common.config import load_database_config
 
 
 def _none_if_empty(value: str | None) -> str | None:
@@ -60,14 +60,18 @@ class Config:
 
     @classmethod
     def from_env(cls, base_dir: Path | None = None) -> "Config":
-        """Load configuration from environment variables."""
+        """Load configuration from the shared project environment."""
         if base_dir is None:
             base_dir = Path(__file__).parent.parent
 
-        # Load .env file if present
-        env_file = base_dir / ".env"
-        if env_file.exists():
-            load_dotenv(env_file)
+        db_config = load_database_config(
+            defaults={
+                # Bastion lookup is opt-in; do not treat an omitted host as localhost.
+                "host": "",
+                "source_table": "aap2_events",
+                "bastion_table": "aap2_user_url",
+            }
+        )
 
         splunk = SplunkConfig(
             host=os.environ.get("SPLUNK_HOST", ""),
@@ -80,52 +84,26 @@ class Config:
             ocp_infra_index=_none_if_empty(os.environ.get("SPLUNK_OCP_INFRA_INDEX")),
         )
 
-        analysis_dir = base_dir / ".analysis"
-
-        # Default directory for job log files
         job_logs_dir_str = os.environ.get("JOB_LOGS_DIR", "")
         job_logs_dir = Path(job_logs_dir_str) if job_logs_dir_str else None
 
-        # GitHub token for Step 4
-        github_token = os.environ.get("GITHUB_TOKEN")
-
-        # Remote log server settings (for --fetch), shared with logs-fetcher.
-        remote_host = os.environ.get("REMOTE_HOST", "")
-        remote_log_dir = os.environ.get("REMOTE_DIR", "")
-
-        # Jumpbox URI for uploading analysis files
-        jumpbox_uri = os.environ.get("JUMPBOX_URI", "")
-
-        # Database configuration for per-job bastion lookup
-        source_db_host = os.environ.get("SOURCE_DB_HOST", "")
-        source_db_port = int(os.environ.get("SOURCE_DB_PORT", "5432"))
-        source_db_name = os.environ.get("SOURCE_DB_NAME", "")
-        source_db_user = os.environ.get("SOURCE_DB_USER", "")
-        source_db_password = os.environ.get("SOURCE_DB_PASSWORD", "")
-        source_db_table = os.environ.get("SOURCE_DB_TABLE", "aap2_events")
-        source_db_bastion_table = os.environ.get("SOURCE_DB_BASTION_TABLE", "aap2_user_url")
-
-        # SSH configuration
-        ssh_jumpbox_alias = os.environ.get("SSH_JUMPBOX_ALIAS", "rca-jumpbox")
-        bastion_ssh_user = os.environ.get("BASTION_SSH_USER", "")
-
         return cls(
             splunk=splunk,
-            analysis_dir=analysis_dir,
+            analysis_dir=base_dir / ".analysis",
             job_logs_dir=job_logs_dir,
-            github_token=github_token,
-            remote_host=remote_host,
-            remote_log_dir=remote_log_dir,
-            jumpbox_uri=jumpbox_uri,
-            source_db_host=source_db_host,
-            source_db_port=source_db_port,
-            source_db_name=source_db_name,
-            source_db_user=source_db_user,
-            source_db_password=source_db_password,
-            source_db_table=source_db_table,
-            source_db_bastion_table=source_db_bastion_table,
-            ssh_jumpbox_alias=ssh_jumpbox_alias,
-            bastion_ssh_user=bastion_ssh_user,
+            github_token=os.environ.get("GITHUB_TOKEN"),
+            remote_host=os.environ.get("REMOTE_HOST", ""),
+            remote_log_dir=os.environ.get("REMOTE_DIR", ""),
+            jumpbox_uri=os.environ.get("JUMPBOX_URI", ""),
+            source_db_host=db_config["host"],
+            source_db_port=db_config["port"],
+            source_db_name=db_config["name"],
+            source_db_user=db_config["user"],
+            source_db_password=db_config["password"],
+            source_db_table=db_config["source_table"],
+            source_db_bastion_table=db_config["bastion_table"],
+            ssh_jumpbox_alias=os.environ.get("SSH_JUMPBOX_ALIAS", "rca-jumpbox"),
+            bastion_ssh_user=os.environ.get("BASTION_SSH_USER", ""),
         )
 
     def find_job_log(self, job_id: str) -> Path | None:

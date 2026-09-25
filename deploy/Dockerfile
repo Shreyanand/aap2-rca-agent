@@ -14,10 +14,11 @@ RUN npm install -g @anthropic-ai/claude-code
 
 WORKDIR /opt/app
 
+COPY requirements.txt /opt/app/requirements.txt
+COPY common/ /opt/app/common/
 COPY skills/ /opt/app/skills/
 COPY deploy/batch-rca-automation/ /opt/app/batch/
-RUN pip install --no-cache-dir --break-system-packages -r /opt/app/batch/requirements.txt
-COPY .claude-plugin/ /opt/app/plugins-cache/
+RUN pip install --no-cache-dir --break-system-packages -r /opt/app/requirements.txt
 
 WORKDIR /workspace
 

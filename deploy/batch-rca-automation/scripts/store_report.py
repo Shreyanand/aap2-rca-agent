@@ -8,12 +8,21 @@ import glob
 import json
 import os
 import sys
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import psycopg2
 import psycopg2.sql
-from utils import connect_db, known_issue_active_sql, load_config
+# Keep these scripts usable from both the repository tree and the copied
+# deployment workspace without requiring a separately installed package.
+for _parent in Path(__file__).resolve().parents:
+    if (_parent / "common" / "__init__.py").is_file():
+        sys.path.insert(0, str(_parent))
+        break
+
+from common.config import load_database_config
+from common.database import connect_db, known_issue_active_sql
 
 MATCH_THRESHOLD = 0.85
 LOOKBACK_HOURS = 4
@@ -248,7 +257,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     try:
-        config = load_config(required=("name", "user", "password", "results_table", "source_table"))
+        config = load_database_config(required=("name", "user", "password", "results_table", "source_table"))
     except SystemExit:
         return 1
 

@@ -8,7 +8,9 @@ import psycopg2
 import psycopg2.sql
 import pytest
 from conftest import RESULTS_TABLE, SOURCE_TABLE
-from utils import _ticket_columns_present, known_issue_active_sql
+from common.database import _ticket_columns_present, known_issue_active_sql
+
+pytestmark = pytest.mark.integration
 
 UTC = timezone.utc
 
