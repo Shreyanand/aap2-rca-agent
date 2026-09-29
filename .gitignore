@@ -17,6 +17,9 @@ venv/
 .env
 .env.*
 
+# Helm values with real secrets (copy values.example.yaml instead)
+deploy/helm/values.yaml
+
 # Node
 node_modules/
 
