@@ -290,14 +290,23 @@ EOF
 # Step 3: Setup MLflow
 #############################################
 MLFLOW_VENV="$SCRIPT_DIR/.mlflow-venv"
+# The workspace PVC preserves this venv across image updates; keep it aligned
+# with the image's pinned MLflow dependency.
+MLFLOW_VERSION="3.11.1"
 if grep -q "MLFLOW_CLAUDE_TRACING_ENABLED.*true" "$SETTINGS_FILE" 2>/dev/null; then
   echo "[STEP 3] Setting up MLflow tracing..."
 
-  if [ ! -d "$MLFLOW_VENV" ]; then
+  if [ ! -x "$MLFLOW_VENV/bin/python3" ]; then
     echo "[INFO] Creating MLflow venv (first run)..."
     python3 -m venv "$MLFLOW_VENV"
-    "$MLFLOW_VENV/bin/pip" install -q mlflow
-    echo "[INFO] MLflow installed"
+  fi
+
+  VENV_MLFLOW_VERSION=$(
+    "$MLFLOW_VENV/bin/python3" -c "import mlflow; print(mlflow.__version__)" 2>/dev/null || true
+  )
+  if [ "$VENV_MLFLOW_VERSION" != "$MLFLOW_VERSION" ]; then
+    "$MLFLOW_VENV/bin/pip" install -q "mlflow==$MLFLOW_VERSION"
+    echo "[INFO] MLflow $MLFLOW_VERSION installed in venv"
   fi
 
   echo "[INFO] MLflow tracing enabled"
