@@ -237,6 +237,31 @@ fetch history, and the final RCA report. See
 [`skills/root-cause-analysis/README.md`](skills/root-cause-analysis/README.md#output)
 for the full file breakdown.
 
+## Development setup
+
+The skill and batch automation share runtime dependencies from the repository-
+root `requirements.txt` and helper modules in `common/`. The skill remains
+discoverable through `skills/root-cause-analysis/SKILL.md`; its scripts and
+schemas stay in that skill-shaped directory.
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest
+```
+
+The root pytest configuration runs the skill unit tests, shared-module tests,
+and the batch PostgreSQL integration tests. PostgreSQL tests skip if the test
+database is not running. To start the provided test database and run those
+tests:
+
+```bash
+deploy/batch-rca-automation/tests/run_integration_tests.sh
+```
+
+Configuration can be supplied through environment variables or a repository-
+root `.env` file. Do not commit credentials.
+
 ## Getting started
 
 - **Run RCA on a single job interactively:** see

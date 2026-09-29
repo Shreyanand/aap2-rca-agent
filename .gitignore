@@ -6,8 +6,12 @@ __pycache__/
 .venv/
 venv/
 
-# Analysis output (may contain job logs, credentials, customer data)
+# Analysis and tracing output (may contain job logs or customer data)
 .analysis/
+skills/root-cause-analysis/.analysis/
+deploy/batch-rca-automation/reports/
+mlflow.db
+mlruns/
 
 # Claude Code local settings (may contain tokens/secrets)
 .claude/settings.local.json
@@ -16,6 +20,7 @@ venv/
 # Environment files
 .env
 .env.*
+!.env.example
 
 # Helm values with real secrets (copy values.example.yaml instead)
 deploy/helm/values.yaml

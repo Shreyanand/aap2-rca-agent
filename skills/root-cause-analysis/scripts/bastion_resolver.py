@@ -1,12 +1,18 @@
-"""Resolve per-job bastion SSH targets and manage SSH config for log fetch."""
+"""Resolve per-job bastion SSH targets using the shared DB and SSH helpers."""
 
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
+
+from common.database import lookup_job_bastion_row
+from common.ssh import (
+    ensure_bastion_host as ensure_ssh_bastion_host,
+    ensure_jumpbox_alias as ensure_ssh_jumpbox_alias,
+    parse_jumpbox_uri,
+    ssh_host_exists,
+)
 
 if TYPE_CHECKING:
     from .config import Config
@@ -23,86 +29,9 @@ class BastionTarget:
     bastion_ssh_port: int | None = None
 
 
-def ssh_config_path() -> Path:
-    return Path(os.environ.get("SSH_CONFIG", Path.home() / ".ssh" / "config"))
-
-
-def ssh_host_exists(alias: str, config_path: Path | None = None) -> bool:
-    path = config_path or ssh_config_path()
-    if not path.exists():
-        return False
-    try:
-        content = path.read_text()
-    except OSError:
-        return False
-
-    for line in content.splitlines():
-        stripped = line.strip()
-        if stripped.lower().startswith("host "):
-            aliases = stripped.split()[1:]
-            if alias in aliases:
-                return True
-    return False
-
-
-def append_ssh_host_block(config_path: Path, alias: str, lines: list[str]) -> None:
-    if ssh_host_exists(alias, config_path):
-        print(f"[SSH] Host alias '{alias}' already in {config_path}")
-        return
-
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    block = "\n".join([f"Host {alias}"] + [f"  {line}" for line in lines]) + "\n"
-    with open(config_path, "a") as f:
-        f.write("\n" + block)
-    try:
-        config_path.chmod(0o600)
-    except OSError:
-        pass
-    print(f"[SSH] Added Host '{alias}' to {config_path}")
-
-
-def parse_jumpbox_uri(jumpbox_uri: str) -> tuple[str, str, str | None]:
-    """Parse JUMPBOX_URI into (user, hostname, port)."""
-    if not jumpbox_uri:
-        raise ValueError("JUMPBOX_URI is empty")
-
-    parts = jumpbox_uri.split()
-    user_host = parts[0]
-    if "@" not in user_host:
-        raise ValueError(f"Invalid JUMPBOX_URI format (expected user@host): {jumpbox_uri!r}")
-
-    user, hostname = user_host.split("@", 1)
-    port: str | None = None
-    if "-p" in parts:
-        port_idx = parts.index("-p")
-        if port_idx + 1 < len(parts):
-            port = parts[port_idx + 1]
-
-    return user, hostname, port
-
-
-def resolve_identity_file() -> str:
-    for candidate in (
-        os.environ.get("SSH_IDENTITY_FILE", ""),
-        str(Path.home() / ".ssh" / "id_ed25519"),
-        str(Path.home() / ".ssh" / "id_rsa"),
-    ):
-        if candidate and Path(candidate).exists():
-            return candidate
-    return str(Path.home() / ".ssh" / "id_ed25519")
-
-
 def bastion_alias(cluster_name: str) -> str:
     sanitized = re.sub(r"[^a-zA-Z0-9-]", "-", cluster_name.lower()).strip("-")
     return f"bastion-{sanitized}"
-
-
-def common_ssh_options(identity_file: str) -> list[str]:
-    return [
-        f"IdentityFile {identity_file}",
-        "StrictHostKeyChecking no",
-        "UserKnownHostsFile /dev/null",
-    ]
 
 
 def resolve_bastion_user(config: Config) -> str:
@@ -115,27 +44,11 @@ def resolve_bastion_user(config: Config) -> str:
 
 
 def ensure_jumpbox_alias(config: Config, identity_file: str | None = None) -> None:
-    jumpbox_alias = config.ssh_jumpbox_alias
-    config_path = ssh_config_path()
-    if ssh_host_exists(jumpbox_alias, config_path):
-        return
-
-    if not config.jumpbox_uri:
-        raise ValueError(
-            f"Jumpbox alias '{jumpbox_alias}' not in SSH config and JUMPBOX_URI is unset"
-        )
-
-    identity = identity_file or resolve_identity_file()
-    user, hostname, port = parse_jumpbox_uri(config.jumpbox_uri)
-    lines = [
-        f"HostName {hostname}",
-        f"User {user}",
-        *common_ssh_options(identity),
-    ]
-    if port:
-        lines.insert(1, f"Port {port}")
-
-    append_ssh_host_block(config_path, jumpbox_alias, lines)
+    ensure_ssh_jumpbox_alias(
+        config.ssh_jumpbox_alias,
+        config.jumpbox_uri,
+        identity_file=identity_file,
+    )
 
 
 def ensure_bastion_host(
@@ -146,21 +59,14 @@ def ensure_bastion_host(
     if not target.cluster_name or not target.bastion_hostname or target.bastion_ssh_port is None:
         raise ValueError("Bastion target is missing cluster_name, bastion_hostname, or port")
 
-    alias = target.remote_host
-    config_path = ssh_config_path()
-    if ssh_host_exists(alias, config_path):
-        return
-
-    identity = identity_file or resolve_identity_file()
-    bastion_user = resolve_bastion_user(config)
-    lines = [
-        f"HostName {target.bastion_hostname}",
-        f"Port {target.bastion_ssh_port}",
-        f"User {bastion_user}",
-        f"ProxyJump {config.ssh_jumpbox_alias}",
-        *common_ssh_options(identity),
-    ]
-    append_ssh_host_block(config_path, alias, lines)
+    ensure_ssh_bastion_host(
+        target.remote_host,
+        target.bastion_hostname,
+        target.bastion_ssh_port,
+        resolve_bastion_user(config),
+        config.ssh_jumpbox_alias,
+        identity_file=identity_file,
+    )
 
 
 def lookup_job_bastion(config: Config, job_id: str) -> BastionTarget | None:
@@ -168,44 +74,18 @@ def lookup_job_bastion(config: Config, job_id: str) -> BastionTarget | None:
     if not config.has_source_db():
         return None
 
-    try:
-        import psycopg2
-        import psycopg2.extras
-        import psycopg2.sql
-    except ImportError as exc:
-        raise RuntimeError(
-            "SOURCE_DB is configured but psycopg2 is not installed. "
-            "Install psycopg2-binary or use REMOTE_HOST for single-host fetch."
-        ) from exc
-
-    query = psycopg2.sql.SQL(
-        "SELECT e.job_id, e.cluster_name, u.bastion_hostname, u.bastion_ssh_port, "
-        "u.instance_base_path "
-        "FROM {} e "
-        "LEFT JOIN {} u ON e.cluster_name = u.cluster_name "
-        "WHERE e.job_id = %s "
-        "ORDER BY e.job_started DESC "
-        "LIMIT 1"
-    ).format(
-        psycopg2.sql.Identifier(config.source_db_table),
-        psycopg2.sql.Identifier(config.source_db_bastion_table),
+    row = lookup_job_bastion_row(
+        {
+            "host": config.source_db_host,
+            "port": config.source_db_port,
+            "name": config.source_db_name,
+            "user": config.source_db_user,
+            "password": config.source_db_password,
+            "source_table": config.source_db_table,
+            "bastion_table": config.source_db_bastion_table,
+        },
+        job_id,
     )
-
-    conn = psycopg2.connect(
-        host=config.source_db_host,
-        port=config.source_db_port,
-        dbname=config.source_db_name,
-        user=config.source_db_user,
-        password=config.source_db_password,
-        cursor_factory=psycopg2.extras.RealDictCursor,
-    )
-    try:
-        with conn.cursor() as cur:
-            cur.execute(query, (job_id,))
-            row = cur.fetchone()
-    finally:
-        conn.close()
-
     if not row:
         return None
 
