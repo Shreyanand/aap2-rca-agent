@@ -24,7 +24,7 @@ This skill uses automated Python scripts for data collection (Steps 1-4) and Cla
 ### 1. Create virtual environment and install dependencies
 
 ```bash
-cd root-cause-analysis
+# Run from the aap2-rca-agent repository root
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
@@ -120,7 +120,7 @@ Required GitHub MCP tools:
 
 ```bash
 # Run all steps (1-4) automatically - requires GITHUB_TOKEN
-.venv/bin/python scripts/cli.py analyze --job-id 1234567
+.venv/bin/python skills/root-cause-analysis/scripts/cli.py analyze --job-id 1234567
 
 # Step 5: Claude analyzes the data and generates summary (automatic when skill is invoked)
 ```
@@ -128,7 +128,7 @@ Required GitHub MCP tools:
 **Note**: The `cli.py analyze` command runs all steps (1-4) automatically. The GitHub fetcher can also be run separately if needed:
 ```bash
 # Run GitHub fetcher separately (standalone execution)
-.venv/bin/python scripts/github_fetcher.py --job-id 1234567
+.venv/bin/python skills/root-cause-analysis/scripts/github_fetcher.py --job-id 1234567
 ```
 
 ### Analyze by Job ID
@@ -136,7 +136,7 @@ Required GitHub MCP tools:
 If `JOB_LOGS_DIR` is configured, you can analyze by job ID:
 
 ```bash
-.venv/bin/python scripts/cli.py analyze --job-id 1234567
+.venv/bin/python skills/root-cause-analysis/scripts/cli.py analyze --job-id 1234567
 ```
 
 The skill will automatically find the log file matching `job_1234567.*` in `JOB_LOGS_DIR`.
@@ -146,7 +146,7 @@ The skill will automatically find the log file matching `job_1234567.*` in `JOB_
 Use `--fetch` to automatically download the job log from the remote server if it's not found locally:
 
 ```bash
-.venv/bin/python scripts/cli.py analyze --job-id 1234567 --fetch
+.venv/bin/python skills/root-cause-analysis/scripts/cli.py analyze --job-id 1234567 --fetch
 ```
 
 This requires `REMOTE_HOST`, `REMOTE_DIR`, and `JOB_LOGS_DIR` to be configured. The log is fetched via SSH + rsync and then analyzed normally.
@@ -156,20 +156,20 @@ This requires `REMOTE_HOST`, `REMOTE_DIR`, and `JOB_LOGS_DIR` to be configured. 
 Alternatively, specify the log file directly:
 
 ```bash
-.venv/bin/python scripts/cli.py analyze --job-log /path/to/job_1234567.json.gz
+.venv/bin/python skills/root-cause-analysis/scripts/cli.py analyze --job-log /path/to/job_1234567.json.gz
 ```
 
 ### Other Commands
 
 ```bash
 # Parse job log only (Step 1)
-.venv/bin/python scripts/cli.py parse --job-log /path/to/job.json.gz
+.venv/bin/python skills/root-cause-analysis/scripts/cli.py parse --job-log /path/to/job.json.gz
 
 # Run ad-hoc Splunk query
-.venv/bin/python scripts/cli.py query 'index=$SPLUNK_OCP_APP_INDEX "x1234"' --earliest=-24h
+.venv/bin/python skills/root-cause-analysis/scripts/cli.py query 'index=$SPLUNK_OCP_APP_INDEX "x1234"' --earliest=-24h
 
 # Check analysis status for a job
-.venv/bin/python scripts/cli.py status 1234567
+.venv/bin/python skills/root-cause-analysis/scripts/cli.py status 1234567
 ```
 
 ### MLflow Tracing (optional)
@@ -177,7 +177,7 @@ Alternatively, specify the log file directly:
 MLflow tracing is supported for debugging and performance analysis but is **not required**. All analysis commands work without MLflow installed.
 
 To enable tracing:
-1. Install MLflow: `pip install "mlflow[genai]>=3.4"` (or `pip install -e ".[mlflow]"` from the repo root)
+1. Install the root dependency set with MLflow: `.venv/bin/pip install -r requirements.txt` from the repository root.
 2. Configure `MLFLOW_TRACKING_URI` and `MLFLOW_EXPERIMENT_NAME` in `.claude/settings.json`
 3. Add the required MLflow hooks to `.claude/settings.json`:
    ```json

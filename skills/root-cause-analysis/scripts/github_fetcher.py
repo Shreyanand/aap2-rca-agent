@@ -20,7 +20,11 @@ from typing import Any
 
 import requests
 
-from .tracing import SpanType, trace
+if __package__:
+    from .tracing import SpanType, trace
+else:
+    # Support the documented direct-script invocation as well as ``-m``.
+    from tracing import SpanType, trace
 
 
 def create_error_result(path: str, status: str = "404") -> dict[str, Any]:

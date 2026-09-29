@@ -1,7 +1,7 @@
 # Contributing
 
-Thanks for your interest in improving the AAP RCA agent. This repo has two
-independent pieces of code, each with its own dependencies and tests:
+Thanks for your interest in improving the AAP RCA agent. The root-cause-analysis
+skill and batch automation share runtime dependencies and Python helpers:
 
 - [`skills/root-cause-analysis/`](skills/root-cause-analysis/README.md) — the
   Claude Code skill that analyzes a single failed job.
@@ -10,41 +10,33 @@ independent pieces of code, each with its own dependencies and tests:
 
 ## Setting up a dev environment
 
-Each component manages its own virtual environment:
-
 ```bash
-# Skill
-cd skills/root-cause-analysis
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-
-# Batch automation
-cd deploy/batch-rca-automation
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -r requirements-dev.txt
 ```
 
 ## Running tests
 
 ```bash
-# Skill unit tests
-cd skills/root-cause-analysis
-.venv/bin/pip install -r requirements-dev.txt  # if present
-.venv/bin/python -m pytest tests/
+.venv/bin/python -m pytest
+```
 
-# Batch automation tests (includes integration tests against a test DB)
-cd deploy/batch-rca-automation
-.venv/bin/pip install -r tests/requirements-dev.txt
-.venv/bin/python -m pytest tests/
-# or, for the Postgres-backed integration suite:
-tests/run_integration_tests.sh
+The root pytest configuration runs skill unit tests, shared-module tests, and
+batch PostgreSQL integration tests. Database-dependent tests skip when the
+test database is unavailable. To start the provided database and run those
+tests:
+
+```bash
+deploy/batch-rca-automation/tests/run_integration_tests.sh
 ```
 
 ## Making changes
 
-- Keep changes to `skills/root-cause-analysis/` and
-  `deploy/batch-rca-automation/` scoped to one component per PR where
-  possible — they have separate dependency lists and test suites.
+- Keep changes scoped to the relevant skill or batch automation area where
+  possible. Shared dependencies live in the root `requirements.txt`, and
+  reusable Python helpers live in `common/`.
+- Add runtime dependencies to the root `requirements.txt` and development/test
+  dependencies to `requirements-dev.txt`.
 - If you change the shape of any `.analysis/<job-id>/stepN_*.json` output,
   update the corresponding JSON schema in `skills/root-cause-analysis/schemas/`
   and both READMEs that document the file table.

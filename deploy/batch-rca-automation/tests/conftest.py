@@ -3,15 +3,10 @@
 from __future__ import annotations
 
 import os
-import sys
 from collections.abc import Generator
-from pathlib import Path
 
 import psycopg2
 import pytest
-
-SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
 
 SOURCE_TABLE = "aap2_events"
 RESULTS_TABLE = "aap2_job_results"
@@ -56,7 +51,7 @@ def db_conn() -> Generator[psycopg2.extensions.connection, None, None]:
     except psycopg2.OperationalError as exc:
         pytest.skip(
             "Postgres test database not available. "
-            "Start it with: docker compose -f docker-compose.test.yml up -d --wait"
+            "Start it with: deploy/batch-rca-automation/tests/run_integration_tests.sh"
             f" ({exc})"
         )
 

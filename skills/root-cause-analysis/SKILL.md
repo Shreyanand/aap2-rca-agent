@@ -21,11 +21,16 @@ The skill's base path is provided when this skill is invoked. Run scripts relati
 ### Preflight Check (run before first analysis)
 
 ```bash
-# Create virtual environment and install dependencies (if .venv doesn't exist)
-python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt
+# The batch image already has the root project's requirements installed.
+# For local development, create the one repository-level environment from the
+# repository root: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 # Check all prerequisites (use --json for structured output)
-.venv/bin/python scripts/cli.py setup --json
+PYTHON=python3
+for candidate in ../../.venv/bin/python ../../../.venv/bin/python; do
+  if [ -x "$candidate" ]; then PYTHON="$candidate"; break; fi
+done
+"$PYTHON" scripts/cli.py setup --json
 ```
 
 Review the JSON output. Some settings are required, others are optional:

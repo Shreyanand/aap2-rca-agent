@@ -12,6 +12,8 @@ import shlex
 import subprocess
 from pathlib import Path
 
+from common.ssh import parse_jumpbox_uri as _parse_jumpbox_uri
+
 
 def _validate_job_id(job_id: str) -> bool:
     """Validate job_id is numeric only to prevent command injection."""
@@ -22,34 +24,9 @@ def _validate_job_id(job_id: str) -> bool:
 
 
 def parse_jumpbox_uri(jumpbox_uri: str) -> tuple[str, str | None]:
-    """
-    Parse JUMPBOX_URI format: "user@host -p port" or "user@host".
-
-    Returns:
-        Tuple of (ssh_target, ssh_port) where ssh_port may be None
-
-    Raises:
-        ValueError: If format is invalid
-    """
-    if not jumpbox_uri:
-        raise ValueError("JUMPBOX_URI is empty")
-
-    parts = jumpbox_uri.split()
-    if len(parts) < 1:
-        raise ValueError("Invalid JUMPBOX_URI format")
-
-    ssh_target = parts[0]
-    ssh_port = None
-
-    if "-p" in parts:
-        try:
-            port_idx = parts.index("-p")
-            if port_idx + 1 < len(parts):
-                ssh_port = parts[port_idx + 1]
-        except (ValueError, IndexError):
-            pass
-
-    return ssh_target, ssh_port
+    """Return the SSH target and optional port using the shared URI parser."""
+    user, hostname, port = _parse_jumpbox_uri(jumpbox_uri)
+    return f"{user}@{hostname}", port
 
 
 def upload_to_jumpbox(

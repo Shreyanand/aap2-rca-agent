@@ -62,10 +62,10 @@ spec:
               {{- end }}
 
               echo "[INIT] Copying skills and scripts from image..."
-              mkdir -p /workspace/.claude/skills /workspace/.claude/plugins/cache
+              mkdir -p /workspace/.claude/skills /workspace/common
               rsync -a --exclude='.analysis' --exclude='__pycache__' --exclude='*.pyc' --exclude='tests' --exclude='README.md' \
                 /opt/app/skills/ /workspace/.claude/skills/
-              cp -r /opt/app/plugins-cache/* /workspace/.claude/plugins/cache/
+              rsync -a --delete /opt/app/common/ /workspace/common/
               cp -r /opt/app/batch/* /workspace/
               chmod +x /workspace/batch_rca_headless.sh
               echo "[INIT] Skills installed: $(ls /workspace/.claude/skills/ | tr '\n' ' ')"

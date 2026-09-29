@@ -8,9 +8,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Support both module and direct execution
+# Support both module and direct execution from the checkout and deployment
+# workspace (where common/ is copied beside the workspace scripts).
+project_candidates = [Path.cwd().resolve(), *Path(__file__).resolve().parents]
+project_root = next((path for path in project_candidates if (path / "common").is_dir()), None)
+if project_root is not None:
+    sys.path.insert(0, str(project_root))
+
 if __name__ == "__main__" and __package__ is None:
-    # Running directly as scripts/cli.py - add parent to path
+    # Running directly as scripts/cli.py - add the skill package to the path.
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from scripts.bastion_resolver import (
         prepare_bastion_for_fetch,
