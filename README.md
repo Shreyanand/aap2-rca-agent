@@ -1,281 +1,163 @@
 # aap2-rca-agent
 
-Automated root cause analysis (RCA) for failed Ansible Automation Platform
-(AAP) jobs on the Red Hat Demo Platform (RHDP). A Claude Code skill
-correlates AAP job logs, Splunk OCP pod logs, and AgnosticD/AgnosticV
-configuration to identify why a job failed, and a batch automation system
-runs that skill continuously in production.
-
-## Overview
-
-This repo has two parts:
-
-| Path | What it is |
-|------|------------|
-| [`skills/root-cause-analysis/`](skills/root-cause-analysis/README.md) | The Claude Code skill: given one failed job, parses the log, queries Splunk, correlates events, fetches relevant GitHub config/code, and produces a root cause summary. Usable standalone in any Claude Code session. |
-| [`deploy/`](deploy) | Everything needed to run the skill continuously in production: a `Dockerfile`, a Helm chart for an OpenShift `CronJob`, and [`batch-rca-automation/`](deploy/batch-rca-automation/README.md), the orchestration scripts that fetch failed jobs, dedupe/pre-filter them, spawn parallel Claude Code agents, and persist results to a database. |
+Automated root-cause analysis for failed Ansible Automation Platform (AAP)
+jobs on the Red Hat Demo Platform (RHDP). The installable Python package
+contains the analysis and database helpers used by the current Claude Code
+Skill and headless batch workflow.
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│ OpenShift CronJob (every 30 minutes)                       │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  Init Container: Setup SSH, Claude settings, skills        │
-│  Main Container: Run batch_rca_headless.sh                 │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-              │
-              ▼
-    ┌──────────────────────┐
-    │ PersistentVolumeClaim│
-    │  - reports/          │
-    │  - analysis results  │
-    │  - state tracking    │
-    └──────────────────────┘
-```
-
-The CronJob's orchestration script (`batch_rca_headless.sh`) fetches recently
-failed jobs, filters out ones already analyzed or matching known issues,
-spawns one `root-cause-analysis` skill invocation per remaining job in
-parallel, aggregates the results into a batch report, and stores them.
-
-The full flow, including dedup, known-issue pre-filtering, and per-agent
-steps, is:
-
 ```mermaid
 flowchart TD
-    Start([Cron trigger every 20 min]) --> LoadEnv[Load env vars from .claude/settings.json]
-
-    LoadEnv --> Step1
-
-    subgraph Step1["Step 1: Query Source DB"]
-        Q[query_source_db.py<br/>SELECT job_id WHERE ai_processed = FALSE<br/>AND job_finished >= --since]
+    Start([OpenShift CronJob]) --> Shell[batch_rca_headless.sh]
+    Shell --> Settings[Load Claude settings and options]
+    Settings --> Query[Query unprocessed jobs from PostgreSQL]
+    Query --> AnyJobs{Jobs found?}
+    AnyJobs -- No --> Done([Exit successfully])
+    AnyJobs -- Yes --> Dedup[Intra-batch dedup]
+    Dedup --> Known[Load recent high-confidence issues]
+    Known --> Filter{Known-issue pre-filter enabled?}
+    Filter -- Yes --> Prefilter[Match by catalog and error similarity]
+    Filter -- No --> Claude
+    Prefilter --> Matched[Store pre-matched jobs]
+    Prefilter --> Claude[claude -p batch coordinator]
+    Claude --> Agents[Parallel root-cause-analysis Skill agents]
+    Agents --> Steps[Run deterministic analysis and Step 5 synthesis]
+    subgraph PerJob[Per-job analysis]
+      Parse[Parse AAP job log]
+      Splunk[Query Splunk]
+      Correlation[Build correlation timeline]
+      GitHub[Fetch AgnosticV config and AgnosticD code]
+      Synthesis[Claude synthesis and jumpbox upload]
+      Parse --> Splunk --> Correlation --> GitHub --> Synthesis
     end
-
-    Step1 --> NoJobs{Jobs found?}
-    NoJobs -- No --> Done([Exit 0])
-    NoJobs -- Yes --> Step1a
-
-    subgraph Step1a["Step 1a: Intra-Batch Dedup"]
-        direction TB
-        D1[pre_filter_jobs.py --dedup-only]
-        D2[Fetch job_name + error_message<br/>from source table]
-        D3[Group jobs by catalog_item<br/>extracted from job_name]
-        D4[Cluster within each group by<br/>error_message similarity >= 0.75]
-        D5[Pick earliest job_id per cluster<br/>as representative]
-        D6{Duplicates<br/>found?}
-        D7[Output representatives list<br/>+ dupes list for later linking]
-        D8[All jobs are representatives]
-
-        D1 --> D2 --> D3 --> D4 --> D5 --> D6
-        D6 -- Yes --> D7
-        D6 -- No --> D8
-    end
-
-    Step1a --> Step1b
-
-    subgraph Step1b["Step 1b: Pre-Filter Against Known Issues"]
-        direction TB
-        F0{--no-pre-filter<br/>flag set?}
-        F1[fetch_known_issues.py<br/>Query recent high-confidence results<br/>from last 4 hours]
-        F1a["Exclude rows where result ticket<br/>closed >= 4h ago (ticket_resolve_datetime_gmt)"]
-        F2{Known issues<br/>found?}
-        F3["pre_filter_jobs.py<br/>(normal mode)"]
-        F3a["Same active-ticket filter on results row<br/>(ticket_link, ticket_resolve_datetime_gmt)"]
-        F4["Pass 1: Match on catalog_item<br/>+ error_message similarity >= 0.75"]
-        F5["Pass 2: Cross-catalog match on<br/>error_message similarity >= 0.90<br/>(catches platform-wide failures)"]
-        F6{Pre-matched<br/>jobs?}
-        F7[store_report.py --pre-matched<br/>Set FK + ai_processed = TRUE]
-        F8{Remaining jobs<br/>to analyze?}
-        F9[Link dupes via<br/>store_report.py --link-dupes]
-        F10[Skip pre-filter]
-
-        F0 -- Yes --> F10
-        F0 -- No --> F1 --> F1a --> F2
-        F2 -- No --> F10
-        F2 -- Yes --> F3 --> F3a --> F4 --> F5 --> F6
-        F6 -- No --> F10
-        F6 -- Yes --> F7 --> F8
-        F8 -- No, all matched --> F9 --> Done2([Exit 0])
-        F8 -- Yes --> F10
-    end
-
-    Step1b --> Step2
-
-    subgraph Step2["Step 2: Build Claude Prompt"]
-        P1[Inject remaining job IDs,<br/>batch_id, and known issues<br/>into orchestration prompt]
-    end
-
-    Step2 --> Step3
-
-    subgraph Step3["Step 3: MLflow Setup"]
-        M1{MLflow tracing<br/>enabled?}
-        M2[Create venv + install mlflow<br/>if first run]
-        M3[Skip]
-        M1 -- Yes --> M2
-        M1 -- No --> M3
-    end
-
-    Step3 --> Step4
-
-    subgraph Step4["Step 4: Claude Headless Execution"]
-        direction TB
-        C1["claude -p --model claude-sonnet-4-6<br/>Sends orchestration prompt"]
-        C1 --> SpawnAgents["Spawn parallel agents<br/>(one per remaining job)"]
-        SpawnAgents --> A1["Agent 1"] & A2["Agent 2"] & A3["Agent N"]
-        A1 & A2 & A3 --> AGG
-        AGG["Aggregate results:<br/>- Tally categories + confidence<br/>- Deduplicate recommendations<br/>- Semantic historical matching<br/>- Cross-job pattern detection"]
-        AGG --> WriteReport["Write batch report JSON"]
-    end
-
-    subgraph PerAgent["Each Agent: root-cause-analysis skill"]
-        direction TB
-        S1["Step 1: Parse job log<br/>(auto-fetch via SSH)"]
-        S1check{Error matches<br/>known issue?}
-        S1early["Early exit:<br/>matched_known_issue"]
-        S2["Step 2: Query Splunk logs"]
-        S3["Step 3: Correlate AAP + Splunk"]
-        S4["Step 4: Fetch GitHub configs"]
-        S5["Step 5: Claude analysis<br/>+ generate summary"]
-        S1 --> S1check
-        S1check -- Yes --> S1early
-        S1check -- No --> S2 --> S3 --> S4 --> S5
-    end
-
-    SpawnAgents -.->|each agent runs| PerAgent
-
-    Step4 --> Step4b
-
-    subgraph Step4b["Step 4b: Verify Report"]
-        V1{Report file<br/>exists?}
-        V1 -- No --> Fail([Exit 1])
-    end
-
-    Step4b --> Step5
-
-    subgraph Step5["Step 5: Store Report in DB"]
-        direction TB
-        ST1[store_report.py report.json]
-        ST2["For each job result:"]
-        ST3{Agent declared<br/>matched_result_id?}
-        ST4["Validate match:<br/>id + root_cause_category<br/>+ confidence = high"]
-        ST5{Valid?}
-        ST6["Use matched FK<br/>Update source: FK + ai_processed"]
-        ST7["Fallback: find_match()<br/>difflib similarity >= 0.85<br/>same catalog_item + category<br/>+ excludes closed tickets on results row (>=4h)"]
-        ST8{Match found?}
-        ST9["INSERT into results table<br/>Update source: FK + ai_processed"]
-
-        ST1 --> ST2 --> ST3
-        ST3 -- Yes --> ST4 --> ST5
-        ST5 -- Yes --> ST6
-        ST5 -- No --> ST7
-        ST3 -- No --> ST7
-        ST7 --> ST8
-        ST8 -- Yes --> ST6
-        ST8 -- No --> ST9
-    end
-
-    Step5 --> Step5b
-
-    subgraph Step5b["Step 5b: Link Intra-Batch Duplicates"]
-        direction TB
-        L1{Dupes from<br/>Step 1a?}
-        L2["store_report.py --link-dupes<br/>Copy representative's FK<br/>to each duplicate job"]
-        L3[Skip]
-        L1 -- Yes --> L2
-        L1 -- No --> L3
-    end
-
-    Step5b --> Success([Batch RCA Complete])
-
-    style Start fill:#4a9eff,color:#fff
-    style Done fill:#2ecc71,color:#fff
-    style Done2 fill:#2ecc71,color:#fff
-    style Success fill:#2ecc71,color:#fff
-    style Fail fill:#e74c3c,color:#fff
-    style Step1a fill:#fff3cd
-    style Step1b fill:#fff3cd
-    style Step4 fill:#d1ecf1
-    style PerAgent fill:#e2d6f3
-    style Step5 fill:#d4edda
-    style Step5b fill:#d4edda
-    style F1a fill:#ffe0b2
-    style F3a fill:#ffe0b2
+    Steps --> Parse
+    Synthesis --> Aggregate[Aggregate the batch report]
+    Aggregate --> Write[Write report JSON]
+    Write --> Store[Store results and link duplicates]
+    Store --> Done
 ```
+
+## Installable Python package
+
+The source tree uses the `src/rca` package layout. Runtime dependencies and
+console entry points are declared in `pyproject.toml`; reusable modules are
+installed once rather than copied into separate `common/` and batch-script
+trees. The on-disk Skill and shell coordinator remain in place in this issue.
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/pytest
+```
+
+`rca-analyze` preserves the manual single-job and debugging commands:
+
+```bash
+rca-analyze analyze --job-id 1234567 --fetch
+rca-analyze analyze --job-log /path/to/job.json.gz
+rca-analyze parse --job-log /path/to/job.json.gz
+rca-analyze query 'index=ocp_apps "x1234"' --earliest=-24h
+rca-analyze status 1234567
+rca-analyze upload --job-id 1234567
+```
+
+The CronJob continues to use `batch_rca_headless.sh`. Its Python helper steps
+run as `python -m rca.batch.<module>` from the installed package. The
+`rca-batch` console entry is a compatibility wrapper for that shell runner;
+its Python replacement is a separate issue.
+
+For a local batch run, point the wrapper at the legacy shell script:
+
+```bash
+RCA_LEGACY_BATCH_SCRIPT=deploy/batch-rca-automation/batch_rca_headless.sh \
+  rca-batch --limit 15 --since '2026-09-30 12:00:00'
+```
+
+## Configuration and state
+
+Configuration is read as data from `RCA_SETTINGS_FILE` (default discovery:
+`./.claude/settings.json`, `./.claude/settings.local.json`, then
+`~/.claude/settings.json`), `.env`, and the process environment. Precedence is
+`.env` < `settings.json` < process environment. JSON values are parsed as
+scalars and are not treated as shell code by Python.
+
+Important settings include:
+
+- `SOURCE_DB_*` for the AAP source and results tables.
+- `JOB_LOGS_DIR`, `REMOTE_HOST`, and `REMOTE_DIR` for job-log retrieval.
+- `SPLUNK_*` and `GITHUB_TOKEN` for deterministic enrichment.
+- `JUMPBOX_URI` for uploading completed analysis.
+- `RCA_STATE_DIR` (default `~/.rca`) for writable reports and analysis state.
+
+Batch reports are written to `$RCA_STATE_DIR/reports/`. Per-job artifacts are
+stored under `$RCA_STATE_DIR/.analysis/{job_id}/`. JSON schemas are included as
+package resources and loaded with `importlib.resources`.
 
 ## Performance
 
 | Metric | Value |
-|--------|-------|
-| **Jobs analyzed** | 50+ jobs/day |
-| **Success rate** | ~95% |
-| **Init time** | 14 seconds |
-| **Analysis time** | 2-3 minutes for 5-7 jobs (parallel) |
+|---|---:|
+| Jobs analyzed | 50+ jobs/day |
+| Success rate | ~95% |
+| Init time | ~14 seconds |
+| Analysis time | 2–3 minutes for 5–7 jobs (parallel) |
+
+These figures describe the existing production shell/Skill workflow; the
+package-layout change is intended to preserve its behavior.
 
 ## Output
 
-**Batch reports:** `/workspace/reports/batch_YYYYMMDD_HHMMSS.json`
+Batch reports are written to
+`$RCA_STATE_DIR/reports/batch_YYYYMMDD_HHMMSS.json`:
 
 ```json
 {
   "batch_id": "batch_YYYYMMDD_HHMMSS",
+  "generated_at": "2026-09-30T12:00:00Z",
   "total_jobs_requested": 4,
-  "total_jobs_completed": 4,
-  "root_cause_category_breakdown": {
-    "infrastructure": 3,
-    "configuration": 1
+  "total_jobs_analyzed": 3,
+  "total_jobs_failed": 1,
+  "timing": {
+    "agent_spawn": "2026-09-30T12:00:00Z",
+    "agent_completion": {},
+    "wall_clock_total_ms": 150000,
+    "aggregation_completed_at": "2026-09-30T12:02:30Z"
   },
-  "job_summaries": [...]
+  "root_cause_category_breakdown": {
+    "infrastructure": {
+      "count": 3,
+      "job_ids": ["1234567", "1234568", "1234569"],
+      "description": "Infrastructure"
+    }
+  },
+  "confidence_breakdown": {"high": 2, "medium": 1, "low": 0},
+  "high_priority_recommendations": [],
+  "job_summaries": [],
+  "failed_analyses": [],
+  "cross_job_patterns": []
 }
 ```
 
-**Per-job analysis:** `/workspace/.claude/skills/root-cause-analysis/.analysis/{job_id}/`
-— session metadata, job context, Splunk logs, correlation analysis, GitHub
-fetch history, and the final RCA report. See
-[`skills/root-cause-analysis/README.md`](skills/root-cause-analysis/README.md#output)
-for the full file breakdown.
+Per-job analysis files are saved under `$RCA_STATE_DIR/.analysis/{job_id}/`:
+job context, Splunk logs, the correlation timeline, GitHub fetch history, and
+the Step 5 analysis summary.
 
-## Development setup
+## Deployment and tests
 
-The skill and batch automation share runtime dependencies from the repository-
-root `requirements.txt` and helper modules in `common/`. The skill remains
-discoverable through `skills/root-cause-analysis/SKILL.md`; its scripts and
-schemas stay in that skill-shaped directory.
+The Docker image uses `python:3.12-slim` and installs the package. The bundled
+Claude CLI binary is exposed for the existing shell runner without installing
+Node. The CronJob still installs the on-disk Skill and prepares SSH/GCP
+credentials in its init container.
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest
+.venv/bin/pytest
+tests/run_integration_tests.sh
+helm lint deploy/helm -f deploy/helm/values.example.yaml
 ```
 
-The root pytest configuration runs the skill unit tests, shared-module tests,
-and the batch PostgreSQL integration tests. PostgreSQL tests skip if the test
-database is not running. To start the provided test database and run those
-tests:
-
-```bash
-deploy/batch-rca-automation/tests/run_integration_tests.sh
-```
-
-Configuration can be supplied through environment variables or a repository-
-root `.env` file. Do not commit credentials.
-
-## Getting started
-
-- **Run RCA on a single job interactively:** see
-  [`skills/root-cause-analysis/README.md`](skills/root-cause-analysis/README.md)
-  for setup (env vars, SSH, Splunk, GitHub) and usage
-  (`cli.py analyze --job-id ...`).
-- **Deploy the batch CronJob:** see
-  [`deploy/batch-rca-automation/README.md`](deploy/batch-rca-automation/README.md)
-  and the Helm chart at [`deploy/helm/`](deploy/helm).
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for dev environment setup, tests, and
-PR guidelines.
+PostgreSQL integration tests use a separate local test database and skip when
+it is unavailable. Never point the test database settings at production.
 
 ## License
 

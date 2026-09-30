@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aap2-rca-agent"
+version = "0.1.0"
+description = "Automated root-cause analysis for Ansible Automation Platform jobs"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+    "claude-agent-sdk==0.2.162",
+    "mlflow==3.11.1",
+    "psycopg2-binary>=2.9.0",
+    "python-dotenv>=1.0.0",
+    "PyYAML>=6.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "build>=1.2.0",
+    "jsonschema>=4.0",
+    "pytest>=8.0",
+]
+
+[project.scripts]
+rca-batch = "rca.batch.orchestrator:main"
+rca-analyze = "rca.analysis.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+rca = ["schemas/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = ["integration: requires the PostgreSQL test service"]

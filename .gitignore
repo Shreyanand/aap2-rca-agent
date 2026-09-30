@@ -2,20 +2,21 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+build/
+dist/
 .pytest_cache/
 .venv/
 venv/
 
 # Analysis and tracing output (may contain job logs or customer data)
 .analysis/
-skills/root-cause-analysis/.analysis/
-deploy/batch-rca-automation/reports/
+.rca/
+reports/
 mlflow.db
 mlruns/
 
-# Claude Code local settings (may contain tokens/secrets)
-.claude/settings.local.json
-.claude/mcp.json
+# Claude Code / RCA settings (may contain tokens/secrets)
+.claude/
 
 # Environment files
 .env

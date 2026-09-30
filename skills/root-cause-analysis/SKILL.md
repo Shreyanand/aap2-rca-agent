@@ -129,7 +129,7 @@ The `cli.py analyze` command automatically runs all steps:
 - **Step 3**: Correlate → Merge AAP and Splunk events into unified timeline
 - **Step 4**: Fetch GitHub files → Parse job metadata, fetch AgnosticV configs and AgnosticD workload code (requires `GITHUB_TOKEN` to be configured)
 
-**Outputs**: `.analysis/<job-id>/step1_job_context.json`, `step2_splunk_logs.json`, `step3_correlation.json`, `step4_github_fetch_history.json`
+**Outputs**: `$RCA_STATE_DIR/.analysis/<job-id>/step1_job_context.json`, `step2_splunk_logs.json`, `step3_correlation.json`, `step4_github_fetch_history.json`
 
 This skill automatically searches for job logs in the configured `JOB_LOGS_DIR`.
 
@@ -164,7 +164,7 @@ python3 -m venv .venv
 3. **REQUIRED**: `step4_github_fetch_history.json` - Configuration and code context
 4. **CONDITIONAL**: `step2_splunk_logs.json` - Only read if step3 indicates errors needing deeper investigation
 
-**Output**: `.analysis/<job-id>/step5_analysis_summary.json` 
+**Output**: `$RCA_STATE_DIR/.analysis/<job-id>/step5_analysis_summary.json`
 
 **Post-Step 5 Action**: After saving the summary, you MUST run the upload command to send the analysis to the Jumpbox:
 ```bash
@@ -272,4 +272,4 @@ See `schemas/summary.schema.json` for complete structure. Example:
 | 4 | `step4_github_fetch_history.json` | Python (Optional Claude updates for MCP verification) |
 | 5 | `step5_analysis_summary.json` | Claude |
 
-All files in `.analysis/<job-id>/`
+All files in `$RCA_STATE_DIR/.analysis/<job-id>/`
