@@ -20,40 +20,34 @@ set -euo pipefail
 #
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -d "$SCRIPT_DIR/common" ]; then
-  PROJECT_ROOT="$SCRIPT_DIR"
-else
-  PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SO_SCHEMA_FILE="$(python3 -c "from importlib.resources import files; print(files('rca').joinpath('schemas', 'batch_report.structured_output.schema.json'))")"
+
+# Validate the settings file without evaluating its values in a shell.
+SETTINGS_FILE="${RCA_SETTINGS_FILE:-$HOME/.claude/settings.json}"
+if [ ! -f "$SETTINGS_FILE" ] && [ -f "$PWD/.claude/settings.json" ]; then
+  SETTINGS_FILE="$PWD/.claude/settings.json"
 fi
-export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
-REPORT_DIR="$SCRIPT_DIR/reports"
-SO_SCHEMA_FILE="$SCRIPT_DIR/schemas/batch_report.structured_output.schema.json"
+if [ ! -f "$SETTINGS_FILE" ]; then
+  echo "[ERROR] Claude settings.json not found at: $SETTINGS_FILE"
+  exit 1
+fi
+if ! RCA_SETTINGS_FILE="$SETTINGS_FILE" python3 -c \
+  'from rca.config import load_environment; load_environment()'; then
+  echo "[ERROR] Failed to load settings.json: $SETTINGS_FILE"
+  exit 1
+fi
+echo "[INFO] Settings JSON validated"
+export RCA_SETTINGS_FILE="$SETTINGS_FILE"
+
+if [ -z "${RCA_STATE_DIR:-}" ]; then
+  RCA_STATE_DIR="$(RCA_SETTINGS_FILE="$SETTINGS_FILE" python3 -c \
+    'from rca.config import Config; print(Config.from_env().state_dir)')"
+fi
+export RCA_STATE_DIR
+REPORT_DIR="$RCA_STATE_DIR/reports"
 TIMESTAMP=$(date -u +%Y%m%d_%H%M%S)
 BATCH_ID="batch_${TIMESTAMP}"
 REPORT_FILE="$REPORT_DIR/${BATCH_ID}.json"
-
-# Load environment variables from Claude settings.json
-SETTINGS_FILE="$SCRIPT_DIR/.claude/settings.json"
-if [ ! -f "$SETTINGS_FILE" ]; then
-  echo "[ERROR] Claude settings.json not found at: $SETTINGS_FILE"
-  echo "[ERROR] Please ensure .claude/settings.json exists with env variables configured"
-  exit 1
-fi
-
-# Extract env vars from JSON using python
-eval "$(python3 -c "
-import json, sys
-try:
-    with open('$SETTINGS_FILE') as f:
-        settings = json.load(f)
-    for key, value in settings.get('env', {}).items():
-        print(f'export {key}=\"{value}\"')
-except Exception as e:
-    print(f'echo \"[ERROR] Failed to load settings.json: {e}\"', file=sys.stderr)
-    sys.exit(1)
-")"
-
-echo "[INFO] Environment variables loaded from settings.json"
 
 # Default: look back 30 minutes (matches the cron interval)
 SINCE=""
@@ -104,7 +98,7 @@ if [ -n "$LIMIT" ]; then
   QUERY_ARGS+=(--limit "$LIMIT")
 fi
 
-JOB_IDS=$(python3 "$SCRIPT_DIR/scripts/query_source_db.py" "${QUERY_ARGS[@]}")
+JOB_IDS=$(python3 -m rca.batch.query_source_db "${QUERY_ARGS[@]}")
 
 if [ -z "$JOB_IDS" ]; then
   echo "[INFO] No unanalyzed jobs found"
@@ -124,7 +118,7 @@ echo "[STEP 1a] Deduplicating within batch..."
 INTRA_BATCH_DUPES="[]"
 DUPE_COUNT=0
 
-DEDUP_OUTPUT=$(echo "$JOB_IDS" | python3 "$SCRIPT_DIR/scripts/pre_filter_jobs.py" --dedup-only 2>/dev/null) || DEDUP_OUTPUT=""
+DEDUP_OUTPUT=$(echo "$JOB_IDS" | python3 -m rca.batch.pre_filter_jobs --dedup-only 2>/dev/null) || DEDUP_OUTPUT=""
 
 if [ -n "$DEDUP_OUTPUT" ]; then
   DUPE_COUNT=$(echo "$DEDUP_OUTPUT" | python3 -c "import json,sys; print(len(json.load(sys.stdin).get('dupes', [])))" 2>/dev/null || echo "0")
@@ -155,7 +149,7 @@ PRE_MATCHED="[]"
 PRE_MATCHED_COUNT=0
 KNOWN_ISSUES="[]"
 
-KNOWN_ISSUES=$(python3 "$SCRIPT_DIR/scripts/fetch_known_issues.py" \
+KNOWN_ISSUES=$(python3 -m rca.batch.fetch_known_issues \
   --lookback-hours 4 --limit 50 2>/dev/null) || KNOWN_ISSUES="[]"
 
 KNOWN_COUNT=$(echo "$KNOWN_ISSUES" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
@@ -168,7 +162,7 @@ elif [ "$KNOWN_COUNT" = "0" ]; then
 else
   echo "[STEP 1b] Pre-filtering $JOB_COUNT job(s) against $KNOWN_COUNT known issue(s)..."
 
-  PRE_FILTER_OUTPUT=$(echo "$JOB_IDS" | python3 "$SCRIPT_DIR/scripts/pre_filter_jobs.py" \
+  PRE_FILTER_OUTPUT=$(echo "$JOB_IDS" | python3 -m rca.batch.pre_filter_jobs \
     --lookback-hours 4 2>/dev/null) || PRE_FILTER_OUTPUT=""
 
   if [ -n "$PRE_FILTER_OUTPUT" ]; then
@@ -193,7 +187,7 @@ for jid in json.load(sys.stdin).get('analyze', []):
 
       # Store pre-matched results immediately so they are saved regardless of
       # whether the Claude invocation below succeeds or fails.
-      python3 "$SCRIPT_DIR/scripts/store_report.py" --pre-matched "$PRE_MATCHED" || {
+      python3 -m rca.batch.store_report --pre-matched "$PRE_MATCHED" || {
         echo "[ERROR] Failed to store pre-matched results"
         exit 1
       }
@@ -207,7 +201,7 @@ for jid in json.load(sys.stdin).get('analyze', []):
         echo "[INFO] All jobs matched known issues, skipping Claude invocation"
         if [ "$DUPE_COUNT" -gt 0 ] 2>/dev/null && [ "$INTRA_BATCH_DUPES" != "[]" ]; then
           echo "[STEP 5b] Linking $DUPE_COUNT intra-batch duplicate(s)..."
-          python3 "$SCRIPT_DIR/scripts/store_report.py" --link-dupes "$INTRA_BATCH_DUPES" || {
+          python3 -m rca.batch.store_report --link-dupes "$INTRA_BATCH_DUPES" || {
             echo "[WARN] Failed to link some intra-batch duplicates (non-fatal)"
           }
         fi
@@ -259,9 +253,8 @@ $KNOWN_ISSUES
 
 3. **Aggregate results** - After all agents complete:
    - For each job ID, read its step5 summary from:
-     ~/.claude/plugins/marketplaces/*/skills/root-cause-analysis/.analysis/{job_id}/step5_analysis_summary.json
-     and step1 context from the same directory's step1_job_context.json.
-     Use a glob to find the correct marketplace path.
+      $RCA_STATE_DIR/.analysis/{job_id}/step5_analysis_summary.json
+      and step1 context from the same directory's step1_job_context.json.
    - Tally: total_jobs_analyzed, total_jobs_failed, confidence_breakdown,
      root_cause_category_breakdown, top-5 high_priority_recommendations
      (deduplicated by action text, highest priority first)
@@ -279,7 +272,7 @@ $KNOWN_ISSUES
    same error). Leave cross_job_patterns as an empty array if there is no clear
    overlap across jobs.
 
-5. **Write the report** - Read schemas/batch_report.structured_output.schema.json,
+ 5. **Write the report** - Read $SO_SCHEMA_FILE,
    then use the Write tool to save the complete batch report as valid JSON to:
    $REPORT_FILE
 
@@ -287,42 +280,16 @@ $KNOWN_ISSUES
 EOF
 
 #############################################
-# Step 3: Setup MLflow
+# Step 3: Execute Claude Headless
 #############################################
-MLFLOW_VENV="$SCRIPT_DIR/.mlflow-venv"
-# The workspace PVC preserves this venv across image updates; keep it aligned
-# with the image's pinned MLflow dependency.
-MLFLOW_VERSION="3.11.1"
-if grep -q "MLFLOW_CLAUDE_TRACING_ENABLED.*true" "$SETTINGS_FILE" 2>/dev/null; then
-  echo "[STEP 3] Setting up MLflow tracing..."
-
-  if [ ! -x "$MLFLOW_VENV/bin/python3" ]; then
-    echo "[INFO] Creating MLflow venv (first run)..."
-    python3 -m venv "$MLFLOW_VENV"
-  fi
-
-  VENV_MLFLOW_VERSION=$(
-    "$MLFLOW_VENV/bin/python3" -c "import mlflow; print(mlflow.__version__)" 2>/dev/null || true
-  )
-  if [ "$VENV_MLFLOW_VERSION" != "$MLFLOW_VERSION" ]; then
-    "$MLFLOW_VENV/bin/pip" install -q "mlflow==$MLFLOW_VERSION"
-    echo "[INFO] MLflow $MLFLOW_VERSION installed in venv"
-  fi
-
-  echo "[INFO] MLflow tracing enabled"
-else
-  echo "[STEP 3] MLflow tracing disabled (skipping)"
-fi
-
-#############################################
-# Step 4: Execute Claude Headless
-#############################################
-echo "[STEP 4] Executing Claude in headless mode..."
+echo "[STEP 3] Executing Claude in headless mode..."
 
 mkdir -p "$REPORT_DIR"
 cd "$SCRIPT_DIR" || exit 1
 
 CLAUDE_STDERR_FILE=$(mktemp)
+CLAUDE_MODEL="${CLAUDE_MODEL:-$(RCA_SETTINGS_FILE="$SETTINGS_FILE" python3 -c \
+  'from rca.config import load_environment; print(load_environment().get("CLAUDE_MODEL", ""))')}"
 CLAUDE_MODEL="${CLAUDE_MODEL:-claude-sonnet-4-6}"
 echo "[INFO] Using model: $CLAUDE_MODEL"
 
@@ -338,19 +305,19 @@ claude -p \
 rm -f "$CLAUDE_STDERR_FILE"
 
 #############################################
-# Step 4a: Log cost to MLflow
+# Step 3a: Log cost to MLflow
 #############################################
 if grep -q "MLFLOW_CLAUDE_TRACING_ENABLED.*true" "$SETTINGS_FILE" 2>/dev/null; then
-  echo "[STEP 4a] Logging cost to MLflow..."
-  "$MLFLOW_VENV/bin/python3" "$SCRIPT_DIR/scripts/log_mlflow_cost.py" \
+  echo "[STEP 3a] Logging cost to MLflow..."
+  python3 -m rca.batch.mlflow_cost \
     --batch-id "$BATCH_ID" \
     --model "$CLAUDE_MODEL" || echo "[WARN] Failed to log cost to MLflow (non-fatal)"
 fi
 
 #############################################
-# Step 4b: Verify report was written
+# Step 3b: Verify report was written
 #############################################
-echo "[STEP 4b] Verifying report..."
+echo "[STEP 3b] Verifying report..."
 
 if [ ! -f "$REPORT_FILE" ]; then
   echo "[ERROR] Claude did not write report to $REPORT_FILE"
@@ -363,7 +330,7 @@ echo "[INFO] Report written to $REPORT_FILE"
 #############################################
 echo "[STEP 5] Storing report in local database..."
 
-python3 "$SCRIPT_DIR/scripts/store_report.py" "$REPORT_FILE" || {
+python3 -m rca.batch.store_report "$REPORT_FILE" || {
   echo "[ERROR] Failed to store report in database"
   exit 1
 }
@@ -373,7 +340,7 @@ python3 "$SCRIPT_DIR/scripts/store_report.py" "$REPORT_FILE" || {
 #############################################
 if [ "$DUPE_COUNT" -gt 0 ] 2>/dev/null && [ "$INTRA_BATCH_DUPES" != "[]" ]; then
   echo "[STEP 5b] Linking $DUPE_COUNT intra-batch duplicate(s)..."
-  python3 "$SCRIPT_DIR/scripts/store_report.py" --link-dupes "$INTRA_BATCH_DUPES" || {
+  python3 -m rca.batch.store_report --link-dupes "$INTRA_BATCH_DUPES" || {
     echo "[WARN] Failed to link some intra-batch duplicates (non-fatal)"
   }
 fi

@@ -26,7 +26,7 @@ spec:
             args:
             - |
               echo "[INIT] Setting up SSH and configs..."
-              mkdir -p /workspace/.ssh /workspace/.claude
+              mkdir -p /workspace/.ssh /workspace/.claude /workspace/.rca
               cp /tmp/ssh-secret/id_ed25519 /workspace/.ssh/id_ed25519
               chmod 600 /workspace/.ssh/id_ed25519
               cat > /workspace/.ssh/config <<EOF
@@ -61,12 +61,11 @@ spec:
               cp /tmp/gcp-creds/application_default_credentials.json /workspace/.config/gcloud/application_default_credentials.json
               {{- end }}
 
-              echo "[INIT] Copying skills and scripts from image..."
-              mkdir -p /workspace/.claude/skills /workspace/common
+              echo "[INIT] Installing skill files and legacy batch entry script..."
+              mkdir -p /workspace/.claude/skills
               rsync -a --exclude='.analysis' --exclude='__pycache__' --exclude='*.pyc' --exclude='tests' --exclude='README.md' \
                 /opt/app/skills/ /workspace/.claude/skills/
-              rsync -a --delete /opt/app/common/ /workspace/common/
-              cp -r /opt/app/batch/* /workspace/
+              cp /opt/app/deploy/batch-rca-automation/batch_rca_headless.sh /workspace/batch_rca_headless.sh
               chmod +x /workspace/batch_rca_headless.sh
               echo "[INIT] Skills installed: $(ls /workspace/.claude/skills/ | tr '\n' ' ')"
             volumeMounts:
@@ -132,6 +131,12 @@ spec:
               value: /workspace
             - name: CLAUDE_CODE_ACCEPT_TOS
               value: "true"
+            - name: RCA_STATE_DIR
+              value: /workspace/.rca
+            - name: RCA_SETTINGS_FILE
+              value: /workspace/.claude/settings.json
+            - name: RCA_LEGACY_BATCH_SCRIPT
+              value: /workspace/batch_rca_headless.sh
             resources:
               requests:
                 cpu: {{ .Values.resources.requests.cpu }}

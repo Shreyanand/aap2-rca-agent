@@ -1,32 +1,32 @@
-FROM node:20-slim
+FROM python:3.12-slim
 
+# git/openssh-client/rsync support bastion fetches; jq is used by existing
+# Claude settings hooks while the Skill-based runner remains in service.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
-    python3 \
-    python3-venv \
-    python3-pip \
     openssh-client \
     rsync \
     jq \
     && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g @anthropic-ai/claude-code
-
 WORKDIR /opt/app
 
-COPY requirements.txt /opt/app/requirements.txt
-COPY common/ /opt/app/common/
-COPY skills/ /opt/app/skills/
-COPY deploy/batch-rca-automation/ /opt/app/batch/
-RUN pip install --no-cache-dir --break-system-packages -r /opt/app/requirements.txt
+COPY . /opt/app/
+
+# The Agent SDK bundles a native Claude CLI binary; expose it for the current
+# shell-based batch runner without installing Node or npm.
+RUN pip install --no-cache-dir /opt/app
+RUN CLI_PATH="$(python -c 'from importlib.resources import files; print(files("claude_agent_sdk").joinpath("_bundled", "claude"))')" \
+    && ln -s "$CLI_PATH" /usr/local/bin/claude
 
 WORKDIR /workspace
 
-RUN mkdir -p /workspace/.config/gcloud /workspace/.claude \
+RUN mkdir -p /workspace/.config/gcloud /workspace/.rca \
     && touch /workspace/.config/gcloud/application_default_credentials.json \
     && chmod -R g+rwX /workspace \
     && chgrp -R 0 /workspace
 
-ENV HOME=/workspace
+ENV HOME=/workspace \
+    RCA_STATE_DIR=/workspace/.rca
 
 ENTRYPOINT ["/bin/bash"]

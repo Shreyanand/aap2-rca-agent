@@ -1,5 +1,2 @@
--r requirements.txt
-
-# Shared unit and integration test suite.
-pytest>=8.0
-jsonschema>=4.0
+# Compatibility entry point. Development dependencies are declared in pyproject.toml.
+.[dev]

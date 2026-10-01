@@ -242,7 +242,7 @@ All steps are executed automatically by the `cli.py analyze` command:
 
 **Note**: Job details, failed tasks, and configuration data are available in step1 and step4 files - reference them rather than duplicating in the summary.
 
-**Output**: `step5_analysis_summary.json` (or present directly to user)
+**Output**: `$RCA_STATE_DIR/.analysis/<job-id>/step5_analysis_summary.json` (or present directly to user)
 
 **Post-Step 5 Action**: After saving the summary, run the upload command to send the analysis to the Jumpbox:
 ```bash
@@ -251,7 +251,7 @@ python scripts/cli.py upload --job-id <job-id>
 
 ## Output
 
-Analysis results are saved to `.analysis/<job-id>/`:
+Analysis results are saved to `$RCA_STATE_DIR/.analysis/<job-id>/`:
 
 | File | Description | Author |
 |------|-------------|--------|

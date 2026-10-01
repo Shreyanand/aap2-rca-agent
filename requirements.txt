@@ -1,6 +1,2 @@
-# Runtime dependencies for both the RCA skill and batch automation.
-psycopg2-binary>=2.9.0
-python-dotenv>=1.0.0
-mlflow==3.11.1
-requests>=2.31.0
-PyYAML>=6.0
+# Compatibility entry point. Runtime dependencies are declared in pyproject.toml.
+.
