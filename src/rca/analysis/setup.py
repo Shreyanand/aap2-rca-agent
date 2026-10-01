@@ -11,6 +11,24 @@ from pathlib import Path
 PLACEHOLDER_PATTERN = "<"
 
 
+def find_repo_root(start: Path | None = None) -> Path | None:
+    """Find the closest checkout/project root above ``start``.
+
+    Installed package code cannot infer the original checkout from its own
+    location, so setup discovery starts at the caller's working directory.
+    ``.git`` may be either a directory or a worktree file.
+    """
+    start_dir = (start or Path.cwd()).expanduser()
+    if start_dir.is_file():
+        start_dir = start_dir.parent
+    start_dir = start_dir.resolve()
+
+    for candidate in (start_dir, *start_dir.parents):
+        if (candidate / ".git").exists() or (candidate / "pyproject.toml").is_file():
+            return candidate
+    return None
+
+
 def is_placeholder(value: str | None) -> bool:
     """Check if a value is a placeholder or unset."""
     if not value:
@@ -575,7 +593,11 @@ def check_mlflow_hooks(repo_root: Path) -> dict:
 def run_checks(base_dir: Path, repo_root: Path | None = None) -> list[dict]:
     """Run all preflight checks and return results."""
     if repo_root is None:
-        repo_root = base_dir.parent.parent
+        repo_root = (
+            find_repo_root(Path.cwd())
+            or find_repo_root(base_dir)
+            or Path.cwd()
+        )
 
     return [
         check_python_venv(repo_root),

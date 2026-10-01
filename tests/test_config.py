@@ -54,6 +54,18 @@ def test_config_defaults(tmp_path: Path) -> None:
     assert config.job_logs_dir is None
 
 
+def test_source_database_is_opt_in_when_host_is_not_configured(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path,
+        SOURCE_DB_NAME="rca",
+        SOURCE_DB_USER="agent",
+        SOURCE_DB_PASSWORD="secret",
+    )
+
+    assert config.source_db_host == ""
+    assert config.has_source_db() is False
+
+
 @pytest.mark.parametrize(
     ("value", "expected"), [("true", True), ("True", True), ("false", False), ("foo", False)]
 )

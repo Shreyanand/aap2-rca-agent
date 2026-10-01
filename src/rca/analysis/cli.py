@@ -7,6 +7,7 @@ import argparse
 import json
 import logging
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,11 +15,17 @@ from unittest.mock import patch
 
 from rca.analysis.jumpbox_io import upload_to_jumpbox
 from rca.analysis.pipeline import AnalysisPipelineError, get_step_name, run_analysis
-from rca.analysis.setup import print_checks, run_checks
+from rca.analysis.setup import find_repo_root, print_checks, run_checks
 from rca.analysis.splunk_client import SplunkClient
 from rca.config import Config
 
 logger = logging.getLogger("rca.analysis")
+
+
+def _project_root() -> Path:
+    """Resolve the active checkout for project-scoped setup and MLflow hooks."""
+    cwd = Path.cwd()
+    return find_repo_root(cwd) or find_repo_root(Path(__file__).resolve().parent) or cwd
 
 
 def _write_json(data: Any, output: str | None = None) -> None:
@@ -100,13 +107,34 @@ def cmd_query(args: argparse.Namespace, config: Config) -> int:
 def cmd_setup(config: Config, as_json: bool) -> int:
     base_dir = Path(__file__).resolve().parent
     with patch.dict(os.environ, config.environment):
-        results = run_checks(base_dir, Path.cwd())
+        results = run_checks(base_dir, _project_root())
     if as_json:
         print(json.dumps(results, indent=2))
     else:
         issues = print_checks(results)
         return 0 if issues == 0 else 1
     return 0 if all(item["status"] == "ok" for item in results) else 1
+
+
+def _run_mlflow_autolog(project_root: Path, environment: dict[str, str]) -> None:
+    """Register MLflow's Claude Code hook for the active project."""
+    try:
+        tracking_uri = environment.get("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000")
+        experiment_name = environment.get("MLFLOW_EXPERIMENT_NAME", "Default")
+        result = subprocess.run(
+            ["mlflow", "autolog", "claude", "-u", tracking_uri, "-n", experiment_name],
+            cwd=str(project_root),
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0 and result.stdout:
+            print(f"\n{result.stdout.strip()}")
+    except Exception:
+        # Autolog setup is best-effort; analysis commands must remain usable
+        # when MLflow or the Claude Code CLI is not installed.
+        pass
 
 
 def cmd_status(args: argparse.Namespace, config: Config) -> int:
@@ -177,18 +205,22 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.command == "analyze":
-        return cmd_analyze(args, config)
-    if args.command == "parse":
-        return cmd_parse(args)
-    if args.command == "query":
-        return cmd_query(args, config)
-    if args.command == "setup":
-        return cmd_setup(config, args.json)
-    if args.command == "status":
-        return cmd_status(args, config)
-    if args.command == "upload":
-        return cmd_upload(args, config)
-    return 2
+        exit_code = cmd_analyze(args, config)
+    elif args.command == "parse":
+        exit_code = cmd_parse(args)
+    elif args.command == "query":
+        exit_code = cmd_query(args, config)
+    elif args.command == "setup":
+        exit_code = cmd_setup(config, args.json)
+    elif args.command == "status":
+        exit_code = cmd_status(args, config)
+    elif args.command == "upload":
+        exit_code = cmd_upload(args, config)
+    else:
+        return 2
+
+    _run_mlflow_autolog(_project_root(), config.environment)
+    return exit_code
 
 
 if __name__ == "__main__":

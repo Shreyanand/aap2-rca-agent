@@ -328,7 +328,7 @@ class GitHubAnalyzer:
                     break
 
             # Step 2: If not found, search across all repos
-            if "content" not in result and repos_to_try:
+            if repos_to_try and "content" not in result:
                 print("    Direct fetch failed, searching...")
                 search_query = f"{file_path} in:path"
 

@@ -72,6 +72,9 @@ def _resolve_job_log(
     job_log: str | Path | None,
     fetch: bool,
 ) -> tuple[Path, str | None]:
+    if fetch and not job_id:
+        raise AnalysisPipelineError("--fetch requires --job-id (it has no effect with --job-log)")
+
     if job_log is not None:
         path = Path(job_log).expanduser()
         if not path.is_file():

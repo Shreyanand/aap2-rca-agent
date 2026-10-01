@@ -211,7 +211,13 @@ class Config:
             env_file=env_file,
         )
         database = load_database_config(
-            defaults={"source_table": "aap2_events", "bastion_table": "aap2_user_url"},
+            defaults={
+                # Bastion lookup is opt-in; an omitted host must not enable a
+                # connection to localhost when the other DB credentials exist.
+                "host": "",
+                "source_table": "aap2_events",
+                "bastion_table": "aap2_user_url",
+            },
             env=env,
         )
 
