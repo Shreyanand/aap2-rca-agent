@@ -12,7 +12,7 @@ from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -31,8 +31,24 @@ def _config(tmp_path: Path, *, max_parallel_jobs: int = 2) -> Config:
             "SOURCE_DB_PASSWORD": "not-a-real-secret",
             "SOURCE_DB_TABLE": "aap2_events",
             "SOURCE_DB_RESULT_TABLE": "aap2_job_results",
+            "JUMPBOX_URI": "agent@jumpbox.example.test",
         },
         env_file=tmp_path / "missing.env",
+    )
+
+
+def _write_summary(analysis_dir: Path) -> None:
+    (analysis_dir / "step5_analysis_summary.json").write_text(
+        json.dumps(
+            {
+                "root_cause": {
+                    "summary": "A test failure",
+                    "category": "infrastructure",
+                    "confidence": "high",
+                }
+            }
+        ),
+        encoding="utf-8",
     )
 
 
@@ -98,6 +114,7 @@ def test_sdk_result_usage_and_semaphore_limit(
                     result=f"completed {prompt}",
                     structured_output={"ok": True},
                     errors=[],
+                    session_id="session-test",
                 )
             finally:
                 active -= 1
@@ -136,6 +153,7 @@ def test_sdk_result_usage_and_semaphore_limit(
     }
     assert results[0].text == "completed job 0"
     assert results[0].structured_output == {"ok": True}
+    assert results[0].session_id == "session-test"
     assert all(item["skills"] == ["root-cause-analysis"] for item in option_values)
 
 
@@ -148,18 +166,6 @@ def test_job_failures_are_isolated_from_other_jobs(
             raise RuntimeError("missing job log")
         analysis_dir = tmp_path / ".analysis" / job_id
         analysis_dir.mkdir(parents=True)
-        (analysis_dir / "step5_analysis_summary.json").write_text(
-            json.dumps(
-                {
-                    "root_cause": {
-                        "summary": "A test failure",
-                        "category": "infrastructure",
-                        "confidence": "high",
-                    }
-                }
-            ),
-            encoding="utf-8",
-        )
         return AnalysisArtifacts(
             job_id=job_id,
             analysis_dir=analysis_dir,
@@ -170,6 +176,7 @@ def test_job_failures_are_isolated_from_other_jobs(
         )
 
     async def fake_sdk_query(*args: object, **kwargs: object) -> orchestrator.SDKQueryResult:
+        _write_summary(tmp_path / ".analysis" / "102")
         return orchestrator.SDKQueryResult(
             is_error=False,
             cost_usd=0.02,
@@ -180,6 +187,7 @@ def test_job_failures_are_isolated_from_other_jobs(
 
     monkeypatch.setattr(orchestrator, "run_analysis", fake_run_analysis)
     monkeypatch.setattr(orchestrator, "_run_sdk_query", fake_sdk_query)
+    monkeypatch.setattr(orchestrator, "upload_to_jumpbox", Mock(return_value=True))
     config = _config(tmp_path, max_parallel_jobs=2)
 
     executions = asyncio.run(
@@ -213,18 +221,6 @@ def test_job_concurrency_bounds_analysis_and_skill_as_one_unit(
         analysis_dir = tmp_path / ".analysis" / job_id
         analysis_dir.mkdir(parents=True, exist_ok=True)
         time.sleep(0.03)
-        (analysis_dir / "step5_analysis_summary.json").write_text(
-            json.dumps(
-                {
-                    "root_cause": {
-                        "summary": "A test failure",
-                        "category": "infrastructure",
-                        "confidence": "high",
-                    }
-                }
-            ),
-            encoding="utf-8",
-        )
         return AnalysisArtifacts(
             job_id=job_id,
             analysis_dir=analysis_dir,
@@ -235,23 +231,25 @@ def test_job_concurrency_bounds_analysis_and_skill_as_one_unit(
         )
 
     async def fake_sdk_query(prompt: str, *args: object, **kwargs: object) -> orchestrator.SDKQueryResult:
-        nonlocal peak_active_jobs
         job_id = prompt.split("AAP job ", 1)[1].split(" ", 1)[0]
-        try:
-            await asyncio.sleep(0.04)
-            return orchestrator.SDKQueryResult(
-                is_error=False,
-                cost_usd=0.01,
-                usage={},
-                text="uploaded",
-            )
-        finally:
-            with active_lock:
-                active_jobs.remove(job_id)
-                peak_active_jobs = max(peak_active_jobs, len(active_jobs))
+        await asyncio.sleep(0.04)
+        _write_summary(tmp_path / ".analysis" / job_id)
+        return orchestrator.SDKQueryResult(
+            is_error=False,
+            cost_usd=0.01,
+            usage={},
+            text="summary written",
+        )
+
+    def fake_upload(job_id: str, *args: object, **kwargs: object) -> bool:
+        time.sleep(0.03)
+        with active_lock:
+            active_jobs.remove(job_id)
+        return True
 
     monkeypatch.setattr(orchestrator, "run_analysis", fake_run_analysis)
     monkeypatch.setattr(orchestrator, "_run_sdk_query", fake_sdk_query)
+    monkeypatch.setattr(orchestrator, "upload_to_jumpbox", fake_upload)
     config = _config(tmp_path, max_parallel_jobs=2)
 
     executions = asyncio.run(
@@ -261,6 +259,150 @@ def test_job_concurrency_bounds_analysis_and_skill_as_one_unit(
     assert all(execution.status == "completed" for execution in executions)
     assert peak_active_jobs == config.max_parallel_jobs
     assert active_jobs == set()
+
+
+def test_retry_rejects_a_previous_step5_summary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = _config(tmp_path)
+    analysis_dir = config.analysis_dir / "101"
+    analysis_dir.mkdir(parents=True)
+    _write_summary(analysis_dir)
+    artifacts = AnalysisArtifacts("101", analysis_dir, {}, {}, {}, {})
+    monkeypatch.setattr(orchestrator, "run_analysis", Mock(return_value=artifacts))
+    monkeypatch.setattr(
+        orchestrator,
+        "_run_sdk_query",
+        AsyncMock(return_value=orchestrator.SDKQueryResult(False, 0.02, {}, "No summary written")),
+    )
+    upload = Mock(return_value=True)
+    monkeypatch.setattr(orchestrator, "upload_to_jumpbox", upload)
+
+    execution = asyncio.run(
+        orchestrator._analyze_jobs([101], config, object(), cwd=tmp_path)
+    )[0]
+
+    assert execution.status == "failed"
+    assert execution.stage == "step5_missing"
+    assert not (analysis_dir / "step5_analysis_summary.json").exists()
+    upload.assert_not_called()
+
+
+@pytest.mark.parametrize("upload_result", [True, False, OSError("SSH unavailable")])
+def test_job_success_requires_a_verified_upload(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, upload_result: bool | Exception
+) -> None:
+    config = _config(tmp_path)
+    analysis_dir = config.analysis_dir / "101"
+    analysis_dir.mkdir(parents=True)
+    artifacts = AnalysisArtifacts("101", analysis_dir, {}, {}, {}, {})
+    monkeypatch.setattr(orchestrator, "run_analysis", Mock(return_value=artifacts))
+
+    async def fake_sdk_query(*args: object, **kwargs: object) -> orchestrator.SDKQueryResult:
+        _write_summary(analysis_dir)
+        return orchestrator.SDKQueryResult(
+            False, 0.02, {"input_tokens": 20}, "summary written", session_id="job-session"
+        )
+
+    monkeypatch.setattr(orchestrator, "_run_sdk_query", fake_sdk_query)
+    upload = (
+        Mock(side_effect=upload_result)
+        if isinstance(upload_result, Exception)
+        else Mock(return_value=upload_result)
+    )
+    monkeypatch.setattr(orchestrator, "upload_to_jumpbox", upload)
+
+    execution = asyncio.run(
+        orchestrator._analyze_jobs([101], config, object(), cwd=tmp_path)
+    )[0]
+
+    upload.assert_called_once_with(
+        "101", analysis_dir, jumpbox_uri=config.jumpbox_uri, session_id="job-session"
+    )
+    assert execution.cost_usd == 0.02
+    assert execution.usage == {"input_tokens": 20}
+    if upload_result is True:
+        assert execution.status == "completed"
+    else:
+        assert execution.status == "failed"
+        assert execution.stage == "upload"
+        assert "Analysis upload failed" in execution.error
+        assert orchestrator._job_summary(execution)["status"] == "failed"
+
+
+@pytest.mark.parametrize(
+    ("category", "expected"),
+    [("workload_bug", "application_bug"), ("credential", "secrets")],
+)
+def test_legacy_skill_categories_survive_report_aggregation(category: str, expected: str) -> None:
+    execution = orchestrator.JobExecution(
+        "101",
+        "completed",
+        1,
+        summary={
+            "root_cause": {"summary": "test", "category": category, "confidence": "high"},
+            "recommendations": [{"action": "Fix the cause", "priority": "high"}],
+        },
+    )
+    summary = orchestrator._job_summary(execution)
+    assert summary["root_cause_category"] == expected
+    assert orchestrator._recommendations([summary])[0]["category"] == expected
+
+
+@pytest.mark.parametrize(
+    ("statuses", "has_pre_match", "expected_exit"),
+    [
+        (["failed", "failed"], False, 1),
+        (["completed", "failed"], False, 0),
+        (["completed", "completed"], False, 0),
+        (["failed", "failed"], True, 0),
+        ([], True, 0),
+    ],
+)
+def test_batch_exit_status_preserves_reports_and_partial_success(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    statuses: list[str],
+    has_pre_match: bool,
+    expected_exit: int,
+) -> None:
+    config = _config(tmp_path)
+    executions = [
+        orchestrator.JobExecution(
+            str(101 + index),
+            status,
+            1,
+            summary={"root_cause": {"summary": "test"}} if status == "completed" else None,
+            error="authentication failed" if status == "failed" else None,
+        )
+        for index, status in enumerate(statuses)
+    ]
+    pre_matched = [{"job_id": 103, "matched_result_id": 9}] if has_pre_match else []
+    monkeypatch.setattr(orchestrator, "pooled_connection", lambda pool: nullcontext(object()))
+    monkeypatch.setattr(orchestrator, "query_job_ids", Mock(return_value=[101, 102, 103]))
+    monkeypatch.setattr(orchestrator, "fetch_job_metadata", Mock(return_value={}))
+    monkeypatch.setattr(orchestrator, "fetch_known_issues", Mock(return_value=[{"result_id": 9}]))
+    monkeypatch.setattr(
+        orchestrator,
+        "filter_against_known_issues",
+        Mock(return_value={"analyze": [int(item.job_id) for item in executions], "pre_matched": pre_matched}),
+    )
+    monkeypatch.setattr(orchestrator, "store_pre_matched", Mock())
+    monkeypatch.setattr(orchestrator, "_analyze_jobs", AsyncMock(return_value=executions))
+    monkeypatch.setattr(orchestrator, "_aggregate_semantics", AsyncMock(return_value=([], None)))
+    monkeypatch.setattr(orchestrator, "_log_mlflow_usage", Mock())
+    store = Mock(return_value=True)
+    monkeypatch.setattr(orchestrator, "_store_batch_report", store)
+
+    assert orchestrator.run_batch(config, pool=object(), cwd=tmp_path) == expected_exit
+    if executions:
+        store.assert_called_once()
+        report = store.call_args.args[2]
+        assert report["total_jobs_failed"] == statuses.count("failed")
+        assert report["total_jobs_analyzed"] == statuses.count("completed")
+        assert store.call_args.args[3].is_file()
+    else:
+        store.assert_not_called()
 
 
 def test_normalize_semantics_validates_job_and_result_ids() -> None:

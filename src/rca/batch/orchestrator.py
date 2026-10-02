@@ -22,6 +22,7 @@ import psycopg2
 import psycopg2.extras
 from psycopg2.pool import ThreadedConnectionPool
 
+from rca.analysis.jumpbox_io import upload_to_jumpbox
 from rca.analysis.pipeline import AnalysisArtifacts, run_analysis
 from rca.batch.fetch_known_issues import fetch_known_issues
 from rca.batch.pre_filter_jobs import (
@@ -56,6 +57,7 @@ _CATEGORY_NAMES = {
     "unknown": "Unknown",
 }
 _VALID_CATEGORIES = set(_CATEGORY_NAMES)
+_CATEGORY_ALIASES = {"workload_bug": "application_bug", "credential": "secrets"}
 _VALID_CONFIDENCE = {"high", "medium", "low"}
 
 _SEMANTIC_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -111,6 +113,7 @@ class SDKQueryResult:
     model_usage: dict[str, dict[str, Any]] = field(default_factory=dict)
     structured_output: Any = None
     errors: tuple[str, ...] = ()
+    session_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -327,6 +330,7 @@ async def _run_sdk_query(
             for error in (getattr(terminal_message, "errors", None) or [])
             if error
         ),
+        session_id=getattr(terminal_message, "session_id", None),
     )
 
 
@@ -341,8 +345,9 @@ and saved their artifacts in `{artifacts.analysis_dir}`. Do not rerun those
 steps, fetch the job log again, or overwrite their files. Follow the Skill's
 Step 5 analysis guidance using the existing artifacts, and write the summary to
 `{artifacts.analysis_dir / 'step5_analysis_summary.json'}`. After writing the
-summary, follow the Skill's required upload action. In your final response,
-briefly report whether the summary was written and whether upload succeeded."""
+summary, stop and briefly report whether it was written. Do not run the Skill's
+upload command: the Python orchestrator will perform and verify the required
+upload after validating your summary."""
 
 
 def _read_step5_summary(artifacts: AnalysisArtifacts) -> dict[str, Any]:
@@ -391,6 +396,9 @@ async def _execute_one_job(
         )
 
     try:
+        # A retry reuses the job directory; only a summary written by this
+        # query may qualify the current execution as successful.
+        (artifacts.analysis_dir / "step5_analysis_summary.json").unlink(missing_ok=True)
         result = await _run_sdk_query(
             _skill_prompt(rendered_id, artifacts),
             config,
@@ -435,6 +443,33 @@ async def _execute_one_job(
             cost_usd=result.cost_usd if result else None,
             usage=result.usage if result else None,
             model_usage=result.model_usage if result else None,
+        )
+
+    try:
+        uploaded = await loop.run_in_executor(
+            executor,
+            partial(
+                upload_to_jumpbox,
+                rendered_id,
+                artifacts.analysis_dir,
+                jumpbox_uri=config.jumpbox_uri,
+                session_id=result.session_id,
+            ),
+        )
+        if not uploaded:
+            raise RuntimeError("Upload helper reported failure")
+    except Exception as exc:
+        return JobExecution(
+            job_id=rendered_id,
+            status="failed",
+            duration_ms=max(0, int((time.monotonic() - started) * 1000)),
+            artifacts=artifacts,
+            summary=summary,
+            error=f"Analysis upload failed: {exc}"[:1000],
+            stage="upload",
+            cost_usd=result.cost_usd,
+            usage=result.usage,
+            model_usage=result.model_usage,
         )
 
     return JobExecution(
@@ -666,6 +701,7 @@ def _confidence(value: Any) -> str:
 
 def _category(value: Any) -> str:
     candidate = str(value or "").lower()
+    candidate = _CATEGORY_ALIASES.get(candidate, candidate)
     return candidate if candidate in _VALID_CATEGORIES else "unknown"
 
 
@@ -1199,6 +1235,14 @@ def run_batch(
 
         prepare_jira_tickets(report)
         failed_count = report["total_jobs_failed"]
+        if report["total_jobs_analyzed"] == 0 and not pre_matched:
+            logger.error(
+                "Batch %s produced no successful analyses: %d failed; report: %s",
+                batch_id,
+                failed_count,
+                report_path,
+            )
+            return 1
         logger.info(
             "[SUCCESS] Batch %s completed: %d analyzed, %d failed; report: %s",
             batch_id,
