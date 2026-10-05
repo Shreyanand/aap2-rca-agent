@@ -1,5 +1,7 @@
-"""Tests for reusable batch pre-filter functions."""
+"""Tests for reusable batch pre-filter functions and CLI behavior."""
 
+import json
+from io import StringIO
 from typing import Any
 from unittest.mock import Mock
 
@@ -72,3 +74,39 @@ def test_filter_against_known_issues_does_not_query_for_empty_batch(monkeypatch)
         "pre_matched": [],
     }
     fetch_context.assert_not_called()
+
+
+def test_main_delegates_known_issue_filter_to_shared_helper(monkeypatch, capsys) -> None:
+    job_ids = [13, 11, 12]
+    connection = Mock()
+    database_config = {
+        "name": "rca",
+        "user": "agent",
+        "password": "secret",
+        "source_table": "events",
+        "results_table": "results",
+    }
+    expected = {
+        "analyze": [13, 12],
+        "pre_matched": [
+            {
+                "job_id": 11,
+                "matched_result_id": 77,
+                "match_reason": "pre_filter_catalog_item+error_message",
+            }
+        ],
+    }
+    filter_helper = Mock(return_value=expected)
+
+    monkeypatch.setattr(pre_filter_jobs.sys, "stdin", StringIO("13\n11\n12\n"))
+    monkeypatch.setattr(
+        pre_filter_jobs, "load_database_config", Mock(return_value=database_config)
+    )
+    monkeypatch.setattr(pre_filter_jobs, "connect_db", Mock(return_value=connection))
+    monkeypatch.setattr(pre_filter_jobs, "filter_against_known_issues", filter_helper)
+
+    assert pre_filter_jobs.main(["--lookback-hours", "8"]) == 0
+
+    filter_helper.assert_called_once_with(connection, "results", "events", job_ids, 8)
+    connection.close.assert_called_once_with()
+    assert json.loads(capsys.readouterr().out) == expected

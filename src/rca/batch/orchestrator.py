@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import partial
+from importlib.resources import files
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -60,46 +61,12 @@ _VALID_CATEGORIES = set(_CATEGORY_NAMES)
 _CATEGORY_ALIASES = {"workload_bug": "application_bug", "credential": "secrets"}
 _VALID_CONFIDENCE = {"high", "medium", "low"}
 
-_SEMANTIC_OUTPUT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "required": ["historical_matches", "cross_job_patterns"],
-    "properties": {
-        "historical_matches": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "required": ["job_id", "matches"],
-                "properties": {
-                    "job_id": {"type": "string"},
-                    "matches": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "required": ["matched_result_id", "similarity_reasoning"],
-                            "properties": {
-                                "matched_result_id": {"type": "integer"},
-                                "similarity_reasoning": {"type": "string"},
-                            },
-                        },
-                    },
-                },
-            },
-        },
-        "cross_job_patterns": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "required": ["pattern", "jobs", "description"],
-                "properties": {
-                    "pattern": {"type": "string"},
-                    "jobs": {"type": "array", "items": {"type": "string"}},
-                    "description": {"type": "string"},
-                    "shared_github_path": {"type": "string"},
-                },
-            },
-        },
-    },
-}
+_SEMANTIC_OUTPUT_SCHEMA: dict[str, Any] = json.loads(
+    files("rca")
+    .joinpath("schemas")
+    .joinpath("batch_semantic_output.schema.json")
+    .read_text(encoding="utf-8")
+)
 
 
 @dataclass(frozen=True)

@@ -10,6 +10,7 @@ import threading
 import time
 from contextlib import nullcontext
 from datetime import datetime, timezone
+from importlib.resources import files
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -459,6 +460,48 @@ def test_normalize_semantics_validates_job_and_result_ids() -> None:
     assert summaries[1]["historical_matches"] == []
     assert summaries[2]["historical_matches"] == []
     assert normalized["cross_job_patterns"][0]["jobs"] == ["job-1", "job-2"]
+
+
+def test_aggregate_semantics_uses_packaged_output_schema(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    query_result = orchestrator.SDKQueryResult(
+        is_error=False,
+        cost_usd=None,
+        usage={},
+        text="",
+        structured_output={"historical_matches": [], "cross_job_patterns": []},
+    )
+    sdk_query = AsyncMock(return_value=query_result)
+    monkeypatch.setattr(orchestrator, "_run_sdk_query", sdk_query)
+    config = _config(tmp_path)
+    job_summaries = [
+        {"job_id": "201", "status": "analyzed", "confidence": "high"},
+        {"job_id": "202", "status": "analyzed", "confidence": "high"},
+    ]
+
+    cross_patterns, result = asyncio.run(
+        orchestrator._aggregate_semantics(
+            job_summaries,
+            [],
+            config,
+            cwd=tmp_path,
+            semaphore=asyncio.Semaphore(config.max_parallel_jobs),
+        )
+    )
+
+    expected_schema = json.loads(
+        files("rca")
+        .joinpath("schemas")
+        .joinpath("batch_semantic_output.schema.json")
+        .read_text(encoding="utf-8")
+    )
+    assert cross_patterns == []
+    assert result is query_result
+    assert sdk_query.call_args.kwargs["output_format"] == {
+        "type": "json_schema",
+        "schema": expected_schema,
+    }
 
 
 def test_report_aggregation_is_deterministic(tmp_path: Path) -> None:

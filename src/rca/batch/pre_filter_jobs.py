@@ -385,36 +385,13 @@ def main(argv: list[str] | None = None) -> int:
             representatives, dupes = dedup_batch(job_ids, job_metadata)
             result = {"representatives": representatives, "dupes": dupes}
         else:
-            recent_results, job_metadata = fetch_filter_context(
+            result = filter_against_known_issues(
                 conn,
                 config["results_table"],
                 config["source_table"],
                 job_ids,
                 args.lookback_hours,
             )
-            catalog_index = build_catalog_index(recent_results) if recent_results else {}
-            category_index = build_category_index(recent_results) if recent_results else {}
-
-            unknown_ids = [jid for jid in job_ids if jid not in job_metadata]
-
-            # First pass: match by catalog_item + error similarity
-            known_job_ids = [jid for jid in job_ids if jid in job_metadata]
-            analyze, pre_matched = filter_jobs(
-                known_job_ids,
-                job_metadata,
-                _catalog_matcher(catalog_index),
-                "pre_filter_catalog_item+error_message",
-            )
-            analyze.extend(unknown_ids)
-
-            # Second pass: cross-catalog match for platform-level failures
-            analyze, cross_matched = filter_jobs(
-                analyze,
-                job_metadata,
-                _cross_catalog_matcher(category_index),
-                "cross_catalog_error_message",
-            )
-            result = {"analyze": analyze, "pre_matched": pre_matched + cross_matched}
 
     except psycopg2.Error as e:
         print(f"Query failed: {e}", file=sys.stderr)
