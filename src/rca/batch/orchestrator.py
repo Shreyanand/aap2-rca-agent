@@ -19,6 +19,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any, Mapping
 
+import jsonschema
 import psycopg2
 import psycopg2.extras
 from psycopg2.pool import ThreadedConnectionPool
@@ -65,6 +66,12 @@ _SEMANTIC_OUTPUT_SCHEMA: dict[str, Any] = json.loads(
     files("rca")
     .joinpath("schemas")
     .joinpath("batch_semantic_output.schema.json")
+    .read_text(encoding="utf-8")
+)
+_BATCH_REPORT_SCHEMA: dict[str, Any] = json.loads(
+    files("rca")
+    .joinpath("schemas")
+    .joinpath("batch_report.structured_output.schema.json")
     .read_text(encoding="utf-8")
 )
 
@@ -850,7 +857,18 @@ def _json_default(value: Any) -> Any:
     return str(value)
 
 
+def _validate_batch_report(report: dict[str, Any]) -> None:
+    try:
+        jsonschema.validate(instance=report, schema=_BATCH_REPORT_SCHEMA)
+    except jsonschema.ValidationError as exc:
+        location = ".".join(str(part) for part in exc.absolute_path) or "$"
+        raise ValueError(
+            f"Batch report failed schema validation at {location}: {exc.message}"
+        ) from exc
+
+
 def _write_report(config: Config, report: dict[str, Any]) -> Path:
+    _validate_batch_report(report)
     reports_dir = config.state_dir / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     report_path = reports_dir / f"{report['batch_id']}.json"

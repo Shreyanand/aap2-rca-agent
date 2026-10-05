@@ -605,6 +605,16 @@ def test_report_aggregation_is_deterministic(tmp_path: Path) -> None:
             "stage": "analysis_pipeline",
         }
     ]
+    orchestrator._validate_batch_report(report)
+
+
+def test_write_report_rejects_invalid_report_before_creating_file(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+
+    with pytest.raises(ValueError, match="Batch report failed schema validation"):
+        orchestrator._write_report(config, {"batch_id": "batch_invalid"})
+
+    assert not (config.state_dir / "reports").exists()
 
 
 def test_jira_step_is_an_explicit_no_op(caplog: pytest.LogCaptureFixture) -> None:
