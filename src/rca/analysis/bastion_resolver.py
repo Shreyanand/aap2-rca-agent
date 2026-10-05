@@ -73,7 +73,10 @@ def lookup_job_bastion(
     config: Config, job_id: str, *, conn: object | None = None
 ) -> BastionTarget | None:
     """Look up cluster and bastion mapping for a job from the source database."""
-    if conn is None and not config.has_source_db():
+    # A pooled connection may exist because batch queries normalize an omitted
+    # SOURCE_DB_HOST to localhost. Keep per-job bastion lookup opt-in based on
+    # the original Config, matching the non-batch CLI behavior.
+    if not config.has_source_db():
         return None
 
     db_config = {
@@ -112,7 +115,9 @@ def resolve_bastion_for_job(
     config: Config, job_id: str, *, db_pool: object | None = None
 ) -> BastionTarget:
     """Resolve the SSH host alias to use when fetching a job log."""
-    if db_pool is None:
+    if not config.has_source_db():
+        target = None
+    elif db_pool is None:
         target = lookup_job_bastion(config, job_id)
     else:
         with pooled_connection(db_pool) as conn:

@@ -91,7 +91,10 @@ Important settings include:
 - `SOURCE_DB_*` for the AAP source and results tables.
 - `JOB_LOGS_DIR`, `REMOTE_HOST`, and `REMOTE_DIR` for job-log retrieval.
 - `SPLUNK_*` and `GITHUB_TOKEN` for deterministic enrichment.
-- `JUMPBOX_URI` for uploading completed analysis.
+- `JUMPBOX_URI` for uploading completed analysis when using a direct SSH target.
+- Optional `SSH_JUMPBOX_ALIAS` to route uploads through a host configured in
+  `~/.ssh/config` (the Helm cluster deployment uses `ci-jumpbox`). When set,
+  SSH and rsync use the alias and take its host, user, and port from SSH config.
 - `RCA_STATE_DIR` (default `~/.rca`) for writable reports and analysis state.
 - `RCA_MAX_PARALLEL_JOBS` for bounded batch concurrency (default `5`).
 

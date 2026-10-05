@@ -157,6 +157,7 @@ def cmd_upload(args: argparse.Namespace, config: Config) -> int:
         config.analysis_dir / args.job_id,
         config.jumpbox_uri,
         config.environment.get("CLAUDE_SESSION_ID", "unknown"),
+        ssh_jumpbox_alias=config.environment.get("SSH_JUMPBOX_ALIAS"),
     )
     return 0 if success else 1
 

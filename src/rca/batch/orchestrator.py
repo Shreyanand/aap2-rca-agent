@@ -454,6 +454,7 @@ async def _execute_one_job(
                 artifacts.analysis_dir,
                 jumpbox_uri=config.jumpbox_uri,
                 session_id=result.session_id,
+                ssh_jumpbox_alias=config.environment.get("SSH_JUMPBOX_ALIAS"),
             ),
         )
         if not uploaded:

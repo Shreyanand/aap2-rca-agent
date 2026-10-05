@@ -34,6 +34,7 @@ def upload_to_jumpbox(
     analysis_dir: Path,
     jumpbox_uri: str | None = None,
     session_id: str | None = None,
+    ssh_jumpbox_alias: str | None = None,
 ) -> bool:
     """
     Upload analysis directory to jumpbox at /usr/local/mlflow/<job_id>/.
@@ -46,6 +47,8 @@ def upload_to_jumpbox(
         analysis_dir: Local analysis directory to upload
         jumpbox_uri: JUMPBOX_URI connection string (defaults to env var)
         session_id: If provided, writes session.json with this ID before upload
+        ssh_jumpbox_alias: Optional SSH config host alias. When provided, SSH and
+            rsync use this alias so HostName, User, and Port come from SSH config.
 
     Returns:
         True on success, False on failure
@@ -59,16 +62,24 @@ def upload_to_jumpbox(
 
     if jumpbox_uri is None:
         jumpbox_uri = os.environ.get("JUMPBOX_URI", "")
+    if ssh_jumpbox_alias is None:
+        ssh_jumpbox_alias = os.environ.get("SSH_JUMPBOX_ALIAS", "")
+    ssh_jumpbox_alias = ssh_jumpbox_alias.strip()
 
-    if not jumpbox_uri:
-        print("  JUMPBOX_URI not set. Skipping upload.")
-        return False
-
-    try:
-        ssh_target, ssh_port = parse_jumpbox_uri(jumpbox_uri)
-    except ValueError as e:
-        print(f"  Error: {e}")
-        return False
+    # Cluster jobs configure a stable SSH alias whose HostName/User/Port come
+    # from the mounted SSH config. Do not replace it with the (sometimes
+    # cluster-unresolvable) hostname in JUMPBOX_URI.
+    if ssh_jumpbox_alias:
+        ssh_target, ssh_port = ssh_jumpbox_alias, None
+    else:
+        if not jumpbox_uri:
+            print("  JUMPBOX_URI not set. Skipping upload.")
+            return False
+        try:
+            ssh_target, ssh_port = parse_jumpbox_uri(jumpbox_uri)
+        except ValueError as e:
+            print(f"  Error: {e}")
+            return False
 
     remote_dir = f"/usr/local/mlflow/{job_id}"
 

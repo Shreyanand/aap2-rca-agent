@@ -1,7 +1,9 @@
 """Tests for CLI setup discovery and post-command integrations."""
 
+from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from rca.analysis import cli
 from rca.analysis.setup import find_repo_root
@@ -89,3 +91,22 @@ def test_mlflow_autolog_uses_loaded_settings(monkeypatch, tmp_path: Path) -> Non
     assert captured["cwd"] == str(tmp_path)
     assert captured["env"] == environment
     assert captured["timeout"] == 10
+
+
+def test_upload_uses_configured_jumpbox_alias(monkeypatch, tmp_path: Path) -> None:
+    config = SimpleNamespace(
+        analysis_dir=tmp_path / ".analysis",
+        jumpbox_uri="agent@unresolvable.example.test",
+        environment={"SSH_JUMPBOX_ALIAS": "ci-jumpbox"},
+    )
+    upload = Mock(return_value=True)
+    monkeypatch.setattr(cli, "upload_to_jumpbox", upload)
+
+    assert cli.cmd_upload(Namespace(job_id="123"), config) == 0
+    upload.assert_called_once_with(
+        "123",
+        tmp_path / ".analysis" / "123",
+        "agent@unresolvable.example.test",
+        "unknown",
+        ssh_jumpbox_alias="ci-jumpbox",
+    )

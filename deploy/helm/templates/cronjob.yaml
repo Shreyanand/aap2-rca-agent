@@ -1,3 +1,5 @@
+{{- $sshConfig := .Values.ssh | default dict -}}
+{{- $jumpboxAlias := $sshConfig.jumpboxAlias | default "ci-jumpbox" -}}
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -38,7 +40,7 @@ spec:
                 StrictHostKeyChecking no
                 UserKnownHostsFile /dev/null
 
-              Host ci-jumpbox
+              Host {{ $jumpboxAlias }}
                 HostName $(cat /tmp/ssh-secret/jumpbox-hostname)
                 User $(cat /tmp/ssh-secret/jumpbox-username)
                 Port $(cat /tmp/ssh-secret/jumpbox-port)
@@ -134,6 +136,8 @@ spec:
               value: /workspace/.rca
             - name: RCA_SETTINGS_FILE
               value: /workspace/.claude/settings.json
+            - name: SSH_JUMPBOX_ALIAS
+              value: {{ $jumpboxAlias | quote }}
             - name: RCA_MAX_PARALLEL_JOBS
               value: {{ .Values.cronjob.maxParallelJobs | default 5 | quote }}
             resources:

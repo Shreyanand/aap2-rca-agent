@@ -77,18 +77,19 @@ def test_lookup_job_bastion_row_uses_shared_connection_and_closes_it(
     connection.close.assert_called_once_with()
 
 
-def test_pool_bastion_lookup_works_without_configured_host(
+def test_pool_bastion_lookup_uses_configured_source_db(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config = Config.from_env(
         environment={
+            "SOURCE_DB_HOST": "localhost",
             "SOURCE_DB_NAME": "rca",
             "SOURCE_DB_USER": "agent",
             "SOURCE_DB_PASSWORD": "secret",
         },
         env_file=tmp_path / "missing.env",
     )
-    assert config.has_source_db() is False
+    assert config.has_source_db() is True
 
     connection = MagicMock()
     connection.closed = 0
@@ -110,11 +111,38 @@ def test_pool_bastion_lookup_works_without_configured_host(
     assert target.remote_log_dir == "/srv/instances"
     assert target.bastion_hostname == "bastion.example.com"
     assert target.bastion_ssh_port == 2200
-    assert lookup.call_args.args[0]["host"] == ""
+    assert lookup.call_args.args[0]["host"] == "localhost"
     assert lookup.call_args.args[1] == "123"
     assert lookup.call_args.kwargs["conn"] is connection
     pool.putconn.assert_called_once_with(connection, close=False)
     connection.rollback.assert_called_once_with()
+
+
+def test_pool_bastion_lookup_respects_optional_source_db_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = Config.from_env(
+        environment={
+            "SOURCE_DB_NAME": "rca",
+            "SOURCE_DB_USER": "agent",
+            "SOURCE_DB_PASSWORD": "secret",
+            "REMOTE_HOST": "configured-log-server",
+            "REMOTE_DIR": "/srv/job-logs/extract",
+        },
+        env_file=tmp_path / "missing.env",
+    )
+    assert config.has_source_db() is False
+
+    pool = MagicMock()
+    lookup = MagicMock()
+    monkeypatch.setattr(bastion_resolver, "lookup_job_bastion_row", lookup)
+
+    target = bastion_resolver.resolve_bastion_for_job(config, "123", db_pool=pool)
+
+    assert target.remote_host == "configured-log-server"
+    assert target.remote_log_dir == "/srv/job-logs/extract"
+    lookup.assert_not_called()
+    pool.getconn.assert_not_called()
 
 
 def test_parse_jumpbox_uri() -> None:

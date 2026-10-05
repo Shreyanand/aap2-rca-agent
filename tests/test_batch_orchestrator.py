@@ -32,6 +32,7 @@ def _config(tmp_path: Path, *, max_parallel_jobs: int = 2) -> Config:
             "SOURCE_DB_TABLE": "aap2_events",
             "SOURCE_DB_RESULT_TABLE": "aap2_job_results",
             "JUMPBOX_URI": "agent@jumpbox.example.test",
+            "SSH_JUMPBOX_ALIAS": "ci-jumpbox",
         },
         env_file=tmp_path / "missing.env",
     )
@@ -317,7 +318,11 @@ def test_job_success_requires_a_verified_upload(
     )[0]
 
     upload.assert_called_once_with(
-        "101", analysis_dir, jumpbox_uri=config.jumpbox_uri, session_id="job-session"
+        "101",
+        analysis_dir,
+        jumpbox_uri=config.jumpbox_uri,
+        session_id="job-session",
+        ssh_jumpbox_alias="ci-jumpbox",
     )
     assert execution.cost_usd == 0.02
     assert execution.usage == {"input_tokens": 20}

@@ -32,6 +32,9 @@ claude:
   backend: "vertex"        # "vertex" (default) or "litellm"
   model: "claude-sonnet-4-6"
 
+ssh:
+  jumpboxAlias: ci-jumpbox
+
 secrets:
   names:
     vertexCreds: claude-vertex-creds
