@@ -1,3 +1,5 @@
+{{- $sshConfig := .Values.ssh | default dict -}}
+{{- $jumpboxAlias := $sshConfig.jumpboxAlias | default "ci-jumpbox" -}}
 {{- if .Values.evalPod.enabled }}
 apiVersion: v1
 kind: Pod
@@ -25,7 +27,7 @@ spec:
         StrictHostKeyChecking no
         UserKnownHostsFile /dev/null
 
-      Host ci-jumpbox
+      Host {{ $jumpboxAlias }}
         HostName $(cat /tmp/ssh-secret/jumpbox-hostname)
         User $(cat /tmp/ssh-secret/jumpbox-username)
         Port $(cat /tmp/ssh-secret/jumpbox-port)
@@ -97,6 +99,8 @@ spec:
       value: {{ .Values.claude.model | quote }}
     - name: HOME
       value: /workspace
+    - name: SSH_JUMPBOX_ALIAS
+      value: {{ $jumpboxAlias | quote }}
     - name: CLAUDE_CODE_ACCEPT_TOS
       value: "true"
     resources:

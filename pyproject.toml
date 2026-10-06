@@ -12,6 +12,7 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = [
     "claude-agent-sdk==0.2.162",
+    "jsonschema>=4.0",
     "mlflow==3.11.1",
     "psycopg2-binary>=2.9.0",
     "python-dotenv>=1.0.0",
@@ -22,7 +23,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "build>=1.2.0",
-    "jsonschema>=4.0",
     "pytest>=8.0",
 ]
 

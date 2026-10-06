@@ -130,7 +130,7 @@
           "error": { "type": "string" },
           "stage": {
             "type": "string",
-            "enum": ["agent_spawn", "skill_execution", "step5_missing", "upload"]
+            "enum": ["agent_spawn", "analysis_pipeline", "skill_execution", "step5_missing", "upload"]
           }
         }
       }

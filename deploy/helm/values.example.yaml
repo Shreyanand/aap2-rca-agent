@@ -10,6 +10,8 @@ image:
 cronjob:
   schedule: "7,37 * * * *"
   limit: 15
+  maxParallelJobs: 5
+  since: "30 minutes"
   period: 30m
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -29,6 +31,9 @@ resources:
 claude:
   backend: "vertex"        # "vertex" (default) or "litellm"
   model: "claude-sonnet-4-6"
+
+ssh:
+  jumpboxAlias: ci-jumpbox
 
 secrets:
   names:
