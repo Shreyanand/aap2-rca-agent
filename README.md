@@ -30,9 +30,10 @@ flowchart TD
       Parse --> Splunk --> Correlation --> GitHub --> Synthesis --> Upload
     end
     Analysis --> Parse
-    Upload --> Aggregate[Aggregate the batch report]
+    Upload --> Aggregate[Semantic aggregation: historical matches and cross-job patterns]
+    Known --> Aggregate
     Aggregate --> Write[Write report JSON]
-    Write --> Store[Store results and link duplicates]
+    Write --> Store[Store results, derive pattern IDs, and link duplicates]
     Store --> Jira[Step 6 placeholder: no Jira tickets created]
     Jira --> Done
 ```
