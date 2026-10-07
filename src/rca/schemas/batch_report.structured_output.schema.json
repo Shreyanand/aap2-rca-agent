@@ -88,6 +88,7 @@
         "required": ["job_id", "status"],
         "properties": {
           "job_id": { "type": "string" },
+          "result_id": { "type": "integer" },
           "status": {
             "type": "string",
             "enum": ["analyzed", "failed", "matched_known_issue"]
@@ -113,7 +114,22 @@
               "properties": {
                 "matched_result_id": { "type": "integer" },
                 "recurrence_count": { "type": "integer", "minimum": 1 },
-                "similarity_reasoning": { "type": "string" }
+                "similarity_reasoning": { "type": "string" },
+                "pattern_id": { "type": "string" },
+                "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["statement_type", "description"],
+                    "properties": {
+                      "statement_type": { "type": "string", "enum": ["observed", "inference"] },
+                      "kind": { "type": "string" },
+                      "description": { "type": "string" },
+                      "source": { "type": "string" }
+                    }
+                  }
+                }
               }
             }
           }
@@ -145,7 +161,22 @@
           "jobs": { "type": "array", "items": { "type": "string" } },
           "description": { "type": "string" },
           "source": { "type": "string", "enum": ["current_batch", "historical"] },
-          "shared_github_path": { "type": "string" }
+          "shared_github_path": { "type": "string" },
+          "pattern_id": { "type": "string" },
+          "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["statement_type", "description"],
+              "properties": {
+                "statement_type": { "type": "string", "enum": ["observed", "inference"] },
+                "kind": { "type": "string" },
+                "description": { "type": "string" },
+                "source": { "type": "string" }
+              }
+            }
+          }
         }
       }
     }

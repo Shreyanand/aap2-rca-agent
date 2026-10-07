@@ -17,7 +17,7 @@ from .bastion_resolver import (
     resolve_remote_log_dir,
 )
 from .correlator import build_correlation_timeline, fetch_correlated_logs
-from .github_fetcher import GitHubAnalyzer, GitHubClient
+from .github_fetcher import GitHubAnalyzer, GitHubAuthenticationError, GitHubClient
 from .job_parser import parse_job_log
 from .log_fetcher import fetch_job_log
 
@@ -191,6 +191,15 @@ def run_analysis(
                 analysis_dir,
                 GitHubClient(config.github_token),
             ).run()
+        except GitHubAuthenticationError as exc:
+            logger.warning("[Step 4] GitHub authentication failed for job_id=%s: %s", parsed_job_id, exc)
+            github_fetch_history = {
+                "job_id": parsed_job_id,
+                "skipped": True,
+                "reason": f"GitHub API authentication failed: {exc}",
+                "github_fetches": [],
+                "fetched_configs": {},
+            }
         except Exception as exc:
             raise AnalysisPipelineError(f"Error fetching GitHub files: {exc}") from exc
     save_step(analysis_dir, 4, github_fetch_history)

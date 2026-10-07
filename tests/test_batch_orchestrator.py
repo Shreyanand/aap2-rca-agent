@@ -455,11 +455,124 @@ def test_normalize_semantics_validates_job_and_result_ids() -> None:
             "matched_result_id": 9,
             "recurrence_count": 3,
             "similarity_reasoning": "Same failure mode.",
+            "pattern_id": "9",
+            "confidence": "low",
+            "evidence": [],
         }
     ]
     assert summaries[1]["historical_matches"] == []
     assert summaries[2]["historical_matches"] == []
     assert normalized["cross_job_patterns"][0]["jobs"] == ["job-1", "job-2"]
+
+
+def test_normalize_semantics_preserves_pattern_metadata() -> None:
+    summaries = [
+        {"job_id": "job-1", "status": "analyzed", "confidence": "high"},
+        {"job_id": "job-2", "status": "analyzed", "confidence": "high"},
+    ]
+    known_issues = [
+        {"result_id": 9, "recurrence_count": 2, "pattern_id": "pattern-9"}
+    ]
+    output = {
+        "historical_matches": [
+            {
+                "job_id": "job-1",
+                "matches": [
+                    {
+                        "matched_result_id": 9,
+                        "similarity_reasoning": "Same failure mode.",
+                        "confidence": "high",
+                        "evidence": [
+                            {
+                                "statement_type": "observed",
+                                "kind": "error_signature",
+                                "description": "Both jobs report timeout from worker 7.",
+                                "source": "splunk",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        "cross_job_patterns": [
+            {
+                "pattern": "worker timeout",
+                "jobs": ["job-1", "job-2"],
+                "description": "Both jobs time out in worker 7.",
+                "confidence": "high",
+                "evidence": [
+                    {
+                        "statement_type": "observed",
+                        "kind": "component",
+                        "description": "Worker 7 is the failing component in both jobs.",
+                        "source": "splunk",
+                    }
+                ],
+            }
+        ],
+    }
+
+    normalized = orchestrator._normalize_semantics(output, summaries, known_issues)
+
+    historical_match = summaries[0]["historical_matches"][0]
+    assert historical_match["pattern_id"] == "pattern-9"
+    assert historical_match["confidence"] == "high"
+    assert historical_match["evidence"][0]["description"] == (
+        "Both jobs report timeout from worker 7."
+    )
+    cross_pattern = normalized["cross_job_patterns"][0]
+    assert cross_pattern["pattern_id"] == "pattern-9"
+    assert cross_pattern["confidence"] == "high"
+    assert cross_pattern["evidence"][0]["kind"] == "component"
+
+
+def test_normalize_semantics_marks_ambiguous_pattern_low() -> None:
+    summaries = [
+        {"job_id": "job-1", "status": "analyzed", "confidence": "high"},
+        {"job_id": "job-2", "status": "analyzed", "confidence": "high"},
+    ]
+    known_issues = [
+        {"result_id": 7, "recurrence_count": 1, "pattern_id": "pattern-7"},
+        {"result_id": 9, "recurrence_count": 1, "pattern_id": "pattern-9"},
+    ]
+    output = {
+        "historical_matches": [
+            {
+                "job_id": "job-1",
+                "matches": [
+                    {
+                        "matched_result_id": 7,
+                        "similarity_reasoning": "Same failure mode.",
+                        "confidence": "high",
+                    }
+                ],
+            },
+            {
+                "job_id": "job-2",
+                "matches": [
+                    {
+                        "matched_result_id": 9,
+                        "similarity_reasoning": "Same failure mode.",
+                        "confidence": "high",
+                    }
+                ],
+            },
+        ],
+        "cross_job_patterns": [
+            {
+                "pattern": "ambiguous failure",
+                "jobs": ["job-1", "job-2"],
+                "description": "The jobs share a failure mode.",
+                "confidence": "high",
+            }
+        ],
+    }
+
+    normalized = orchestrator._normalize_semantics(output, summaries, known_issues)
+
+    cross_pattern = normalized["cross_job_patterns"][0]
+    assert cross_pattern["pattern_id"] == "pattern-7"
+    assert cross_pattern["confidence"] == "low"
 
 
 def test_aggregate_semantics_uses_packaged_output_schema(
