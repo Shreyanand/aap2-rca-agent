@@ -27,7 +27,7 @@ def fetch_known_issues(
                 """SELECT * FROM (
                        SELECT DISTINCT ON (root_cause_category, catalog_item)
                               id, catalog_item, root_cause_category, root_cause_summary,
-                              batch_id, confidence,
+                              batch_id, confidence, cross_job_pattern,
                               COUNT(*) OVER (
                                   PARTITION BY root_cause_category, catalog_item
                               ) AS recurrence_count
@@ -57,6 +57,7 @@ def fetch_known_issues(
             "batch_id": row["batch_id"],
             "confidence": row["confidence"],
             "recurrence_count": row["recurrence_count"],
+            "pattern_id": row["cross_job_pattern"] or str(row["id"]),
         }
         for row in rows
     ]

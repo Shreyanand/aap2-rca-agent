@@ -31,6 +31,26 @@
                 },
                 "similarity_reasoning": {
                   "type": "string"
+                },
+                "confidence": {
+                  "type": "string",
+                  "enum": ["high", "medium", "low"]
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["statement_type", "description"],
+                    "properties": {
+                      "statement_type": {
+                        "type": "string",
+                        "enum": ["observed", "inference"]
+                      },
+                      "kind": { "type": "string" },
+                      "description": { "type": "string" },
+                      "source": { "type": "string" }
+                    }
+                  }
                 }
               }
             }
@@ -62,6 +82,26 @@
           },
           "shared_github_path": {
             "type": "string"
+          },
+          "confidence": {
+            "type": "string",
+            "enum": ["high", "medium", "low"]
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["statement_type", "description"],
+              "properties": {
+                "statement_type": {
+                  "type": "string",
+                  "enum": ["observed", "inference"]
+                },
+                "kind": { "type": "string" },
+                "description": { "type": "string" },
+                "source": { "type": "string" }
+              }
+            }
           }
         }
       }

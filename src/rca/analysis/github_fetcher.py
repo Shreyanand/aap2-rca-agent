@@ -27,6 +27,10 @@ def create_error_result(path: str, status: str = "404") -> dict[str, Any]:
     return {"error": "all_paths_failed", "paths_tried": [{"path": path, "status": status}]}
 
 
+class GitHubAuthenticationError(Exception):
+    """Raised when GitHub rejects the configured API token."""
+
+
 class GitHubClient:
     """GitHub API client for fetching files"""
 
@@ -47,6 +51,8 @@ class GitHubClient:
                 data = response.json()
                 content = base64.b64decode(data["content"]).decode("utf-8")
                 return {"path": path, "content": content, "sha": data["sha"], "size": data["size"]}
+            elif response.status_code == 401:
+                raise GitHubAuthenticationError(f"GitHub API authentication failed for {path}")
             elif response.status_code == 404:
                 return create_error_result(path, status="404")
             else:
@@ -58,6 +64,8 @@ class GitHubClient:
         except requests.exceptions.RequestException as e:
             print(f"[ERROR] Request failed for {path}: {e}")
             return create_error_result(path, status="request_error")
+        except GitHubAuthenticationError:
+            raise
         except Exception as e:
             print(f"[ERROR] Failed to fetch {path}: {e}")
             return create_error_result(path, status="unknown_error")

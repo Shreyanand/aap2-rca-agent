@@ -539,6 +539,9 @@ Historical matching rules:
   genuinely the same. A shared category or catalog item alone is insufficient.
 - Use only matched_result_id values present in the supplied known-issue list.
 - Give one concise sentence of evidence-based similarity reasoning per match.
+- Include a confidence value and concise evidence for each match. Evidence
+  should cite concrete signatures, components, resources, logs, or artifacts.
+- Distinguish observed facts from inferences in the evidence.
 
 Cross-job pattern rules:
 - Report only clear overlaps across at least two new jobs: same failing
@@ -546,6 +549,8 @@ Cross-job pattern rules:
 - Do not infer a pattern from a shared category alone. Return an empty array
   when no clear pattern exists.
 - Include only job IDs from the supplied newly analyzed jobs.
+- Include a confidence value and concise evidence for each pattern. Evidence
+  should explain why the jobs belong to the same failure pattern.
 
 Newly analyzed jobs:
 {json.dumps(job_summaries, ensure_ascii=False, default=str)}
@@ -570,6 +575,32 @@ def _normalize_semantics(
     known_by_id = {str(issue.get("result_id")): issue for issue in known_issues}
     matches_by_job: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
+    def normalize_evidence(value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        evidence: list[dict[str, Any]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            description = item.get("description")
+            statement_type = item.get("statement_type")
+            if not isinstance(description, str) or not description.strip():
+                continue
+            if statement_type not in ("observed", "inference"):
+                continue
+            entry = {
+                "statement_type": statement_type,
+                "description": description.strip(),
+            }
+            kind = item.get("kind")
+            if isinstance(kind, str) and kind.strip():
+                entry["kind"] = kind.strip()
+            source = item.get("source")
+            if isinstance(source, str) and source.strip():
+                entry["source"] = source.strip()
+            evidence.append(entry)
+        return evidence
+
     raw_matches = output.get("historical_matches", [])
     if isinstance(raw_matches, list):
         for item in raw_matches:
@@ -582,12 +613,12 @@ def _normalize_semantics(
             if not isinstance(raw_job_matches, list):
                 continue
             seen_result_ids: set[str] = set()
-            for match in raw_job_matches:
-                if not isinstance(match, dict):
+            for raw_match in raw_job_matches:
+                if not isinstance(raw_match, dict):
                     continue
-                result_id = str(match.get("matched_result_id", ""))
+                result_id = str(raw_match.get("matched_result_id", ""))
                 issue = known_by_id.get(result_id)
-                reasoning = match.get("similarity_reasoning")
+                reasoning = raw_match.get("similarity_reasoning")
                 if issue is None or not isinstance(reasoning, str) or not reasoning.strip():
                     continue
                 if result_id in seen_result_ids:
@@ -598,13 +629,15 @@ def _normalize_semantics(
                     recurrence = max(1, int(issue.get("recurrence_count", 1)))
                 except (KeyError, TypeError, ValueError):
                     continue
-                matches_by_job[job_id].append(
-                    {
-                        "matched_result_id": numeric_id,
-                        "recurrence_count": recurrence,
-                        "similarity_reasoning": reasoning.strip(),
-                    }
-                )
+                match: dict[str, Any] = {
+                    "matched_result_id": numeric_id,
+                    "recurrence_count": recurrence,
+                    "similarity_reasoning": reasoning.strip(),
+                    "pattern_id": str(issue.get("pattern_id") or numeric_id),
+                    "confidence": _confidence(raw_match.get("confidence")),
+                    "evidence": normalize_evidence(raw_match.get("evidence")),
+                }
+                matches_by_job[job_id].append(match)
 
     cross_patterns: list[dict[str, Any]] = []
     raw_patterns = output.get("cross_job_patterns", [])
@@ -630,7 +663,18 @@ def _normalize_semantics(
                 "jobs": unique_jobs,
                 "description": description.strip(),
                 "source": "current_batch",
+                "confidence": _confidence(pattern.get("confidence")),
+                "evidence": normalize_evidence(pattern.get("evidence")),
             }
+            pattern_ids = {
+                match["pattern_id"]
+                for job_id in unique_jobs
+                for match in matches_by_job.get(job_id, [])
+            }
+            if pattern_ids:
+                item["pattern_id"] = min(pattern_ids)
+                if len(pattern_ids) > 1:
+                    item["confidence"] = "low"
             shared_path = pattern.get("shared_github_path")
             if isinstance(shared_path, str) and shared_path.strip():
                 item["shared_github_path"] = shared_path.strip()
@@ -1215,6 +1259,7 @@ def run_batch(
             if not _store_batch_report(pool, database, report, report_path, dupes):
                 logger.error("Report storage helper rejected batch %s", batch_id)
                 return 1
+            report_path = _write_report(config, report)
         except psycopg2.Error as exc:
             logger.error("Failed to store report in database: %s", exc)
             return 1

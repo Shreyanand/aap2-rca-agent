@@ -80,6 +80,7 @@ def store_report(
     source_table = config["source_table"]
 
     jobs = report.get("job_results") or report.get("job_summaries") or report.get("jobs", [])
+    result_ids_by_job: dict[str, int] = {}
     with conn.cursor() as cur:
         for job in jobs:
             jid = str(job.get("job_id", ""))
@@ -104,6 +105,8 @@ def store_report(
                     matched_id = find_match(cur, results_table, job)
 
             if matched_id is not None:
+                result_ids_by_job[jid] = matched_id
+                job["result_id"] = matched_id
                 cur.execute(
                     psycopg2.sql.SQL(
                         """UPDATE {} SET aap2_job_results_fk_id = %s, ai_processed = TRUE
@@ -134,15 +137,29 @@ def store_report(
                 )
                 row = cur.fetchone()
                 new_id = (row["id"] if isinstance(row, Mapping) else row[0]) if row else None
+                if new_id is not None:
+                    result_ids_by_job[jid] = new_id
+                    job["result_id"] = new_id
 
                 if status in ("analyzed", "matched_known_issue"):
                     cur.execute(
                         psycopg2.sql.SQL(
-                            """UPDATE {} SET aap2_job_results_fk_id = %s, ai_processed = TRUE
-                               WHERE job_id = %s"""
-                        ).format(psycopg2.sql.Identifier(source_table)),
-                        (new_id, jid),
+                        """UPDATE {} SET aap2_job_results_fk_id = %s, ai_processed = TRUE
+                           WHERE job_id = %s"""
+                    ).format(psycopg2.sql.Identifier(source_table)),
+                    (new_id, jid),
                     )
+
+    for pattern in report.get("cross_job_patterns", []):
+        if pattern.get("pattern_id"):
+            continue
+        result_ids = [
+            result_ids_by_job[str(job_id)]
+            for job_id in pattern.get("jobs", [])
+            if str(job_id) in result_ids_by_job
+        ]
+        if result_ids:
+            pattern["pattern_id"] = str(min(result_ids))
 
     conn.commit()
     return True
@@ -220,11 +237,31 @@ def store_cross_patterns(conn: Any, config: dict[str, Any], report: dict[str, An
         return
     results_table = config["results_table"]
     batch_id = report.get("batch_id", "")
+    jobs = report.get("job_results") or report.get("job_summaries") or report.get("jobs", [])
+    result_ids_by_job = {
+        str(job.get("job_id")): job.get("result_id")
+        for job in jobs
+        if job.get("result_id") is not None
+    }
     with conn.cursor() as cur:
         for p in patterns:
-            pattern_name = p.get("pattern")
+            pattern_id = p.get("pattern_id")
+            if not pattern_id:
+                continue
+            pattern_name = str(pattern_id)
             description = p.get("description")
             for job_id in p.get("jobs", []):
+                result_id = result_ids_by_job.get(str(job_id))
+                if result_id is not None:
+                    cur.execute(
+                        psycopg2.sql.SQL(
+                            """UPDATE {}
+                               SET cross_job_pattern = %s, cross_job_pattern_description = %s
+                               WHERE id = %s"""
+                        ).format(psycopg2.sql.Identifier(results_table)),
+                        (pattern_name, description, result_id),
+                    )
+                    continue
                 cur.execute(
                     psycopg2.sql.SQL(
                         """UPDATE {}
@@ -232,6 +269,20 @@ def store_cross_patterns(conn: Any, config: dict[str, Any], report: dict[str, An
                            WHERE batch_id = %s AND job_id = %s"""
                     ).format(psycopg2.sql.Identifier(results_table)),
                     (pattern_name, description, batch_id, str(job_id)),
+                )
+        for job in jobs:
+            for match in job.get("historical_matches", []) or []:
+                pattern_id = match.get("pattern_id")
+                matched_result_id = match.get("matched_result_id")
+                if not pattern_id or matched_result_id is None:
+                    continue
+                cur.execute(
+                    psycopg2.sql.SQL(
+                        """UPDATE {}
+                           SET cross_job_pattern = %s
+                           WHERE id = %s AND cross_job_pattern IS NULL"""
+                    ).format(psycopg2.sql.Identifier(results_table)),
+                    (str(pattern_id), matched_result_id),
                 )
     conn.commit()
 

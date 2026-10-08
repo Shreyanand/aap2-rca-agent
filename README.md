@@ -30,9 +30,10 @@ flowchart TD
       Parse --> Splunk --> Correlation --> GitHub --> Synthesis --> Upload
     end
     Analysis --> Parse
-    Upload --> Aggregate[Aggregate the batch report]
+    Upload --> Aggregate[Semantic aggregation: historical matches and cross-job patterns]
+    Known --> Aggregate
     Aggregate --> Write[Write report JSON]
-    Write --> Store[Store results and link duplicates]
+    Write --> Store[Store results, derive pattern IDs, and link duplicates]
     Store --> Jira[Step 6 placeholder: no Jira tickets created]
     Jira --> Done
 ```
@@ -141,11 +142,59 @@ Batch reports are written to
   },
   "confidence_breakdown": {"high": 2, "medium": 1, "low": 0},
   "high_priority_recommendations": [],
-  "job_summaries": [],
+  "job_summaries": [
+    {
+      "job_id": "1234567",
+      "result_id": 42,
+      "status": "analyzed",
+      "historical_matches": [
+        {
+          "matched_result_id": 9,
+          "recurrence_count": 3,
+          "similarity_reasoning": "Same worker timeout signature.",
+          "pattern_id": "9",
+          "confidence": "high",
+          "evidence": [
+            {
+              "statement_type": "observed",
+              "kind": "error_signature",
+              "description": "Both jobs report worker 7 timing out.",
+              "source": "splunk"
+            }
+          ]
+        }
+      ]
+    }
+  ],
   "failed_analyses": [],
-  "cross_job_patterns": []
+  "cross_job_patterns": [
+    {
+      "pattern": "Worker 7 timeout",
+      "jobs": ["1234567", "1234568"],
+      "description": "Both jobs time out in worker 7.",
+      "source": "current_batch",
+      "pattern_id": "9",
+      "confidence": "high",
+      "evidence": [
+        {
+          "statement_type": "observed",
+          "kind": "component",
+          "description": "Worker 7 is the failing component in both jobs.",
+          "source": "splunk"
+        }
+      ]
+    }
+  ]
 }
 ```
+
+`pattern_id` is a durable, derived anchor. It is the earliest known result ID
+linked to the failure pattern, or the first persisted result ID for a new
+current-batch pattern. The anchor is stored in the existing
+`cross_job_pattern` column, so this feature does not add a database table or
+column. `historical_matches` and `cross_job_patterns` remain separate report
+signals, but they now share the same `pattern_id` when they describe the same
+failure pattern.
 
 Per-job analysis files are saved under `$RCA_STATE_DIR/.analysis/{job_id}/`:
 job context, Splunk logs, the correlation timeline, GitHub fetch history, and
