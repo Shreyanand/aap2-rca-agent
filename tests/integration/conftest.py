@@ -31,13 +31,18 @@ CREATE TABLE {RESULTS_TABLE} (
     catalog_item TEXT,
     root_cause_category TEXT,
     root_cause JSONB,
-    job_duration_seconds INTEGER,
     cross_job_pattern TEXT,
     cross_job_pattern_description TEXT,
+    cross_job_pattern_confidence TEXT
+        CHECK (cross_job_pattern_confidence IN ('high', 'medium', 'low')),
+    job_duration_seconds INTEGER,
     ticket_link TEXT,
     ticket_resolve_datetime_gmt TIMESTAMPTZ,
     UNIQUE (batch_id, job_id)
 );
+
+CREATE INDEX aap2_job_results_cross_job_pattern_idx
+    ON aap2_job_results(cross_job_pattern);
 """
 
 
