@@ -146,7 +146,12 @@ def build_root_cause(job: dict[str, Any], jid: str) -> dict[str, Any]:
 
 
 def store_report(
-    conn: Any, config: dict[str, Any], report: dict[str, Any], filename: str | None = None
+    conn: Any,
+    config: dict[str, Any],
+    report: dict[str, Any],
+    filename: str | None = None,
+    *,
+    commit: bool = True,
 ) -> bool:
     batch_id = report.get("batch_id")
     if not batch_id and filename:
@@ -220,11 +225,18 @@ def store_report(
         if result_ids:
             pattern["pattern_id"] = str(min(result_ids))
 
-    conn.commit()
+    if commit:
+        conn.commit()
     return True
 
 
-def store_pre_matched(conn: Any, config: dict[str, Any], pre_matched: list[dict[str, Any]]) -> int:
+def store_pre_matched(
+    conn: Any,
+    config: dict[str, Any],
+    pre_matched: list[dict[str, Any]],
+    *,
+    commit: bool = True,
+) -> int:
     """Store pre-filtered jobs that were matched before Claude invocation."""
     source_table = config["source_table"]
     count = 0
@@ -244,12 +256,17 @@ def store_pre_matched(conn: Any, config: dict[str, Any], pre_matched: list[dict[
                 f" (reason: {job.get('match_reason', 'catalog_item')})"
             )
             count += 1
-    conn.commit()
+    if commit:
+        conn.commit()
     return count
 
 
 def link_intra_batch_dupes(
-    conn: Any, config: dict[str, Any], intra_batch_dupes: list[dict[str, Any]]
+    conn: Any,
+    config: dict[str, Any],
+    intra_batch_dupes: list[dict[str, Any]],
+    *,
+    commit: bool = True,
 ) -> int:
     """Copy aap2_job_results_fk_id from representative to each duplicate in the same batch."""
     source_table = config["source_table"]
@@ -286,7 +303,8 @@ def link_intra_batch_dupes(
             print(f"[DUPE-LINK] job {dupe_id} -> result {fk_id} (via representative {rep_id})")
             count += 1
 
-    conn.commit()
+    if commit:
+        conn.commit()
     return count
 
 
@@ -346,7 +364,6 @@ def _assign_cluster(
     results_table: str,
     result_ids: list[int],
     target_anchor: int,
-    confidence: Confidence,
     description: str | None,
 ) -> int:
     existing_rows = [_fetch_result(cur, results_table, result_id) for result_id in result_ids]
@@ -362,7 +379,7 @@ def _assign_cluster(
     canonical_anchor = min(existing_anchors)
 
     anchor_values = [str(anchor) for anchor in existing_anchors]
-    current_ids = [row["id"] for row in existing_rows if row is not None]
+    anchor_ids = sorted(existing_anchors)
     cur.execute(
         psycopg2.sql.SQL(
             """UPDATE {}
@@ -371,26 +388,26 @@ def _assign_cluster(
                        WHEN id = ANY(%s) THEN %s
                        ELSE cross_job_pattern_description
                    END,
-                   cross_job_pattern_confidence = CASE
-                       WHEN id = ANY(%s) THEN %s
-                       ELSE cross_job_pattern_confidence
-                   END
                WHERE cross_job_pattern = ANY(%s) OR id = ANY(%s)"""
         ).format(psycopg2.sql.Identifier(results_table)),
         (
             str(canonical_anchor),
-            current_ids,
+            anchor_ids,
             description,
-            current_ids,
-            confidence,
             anchor_values,
-            current_ids,
+            anchor_ids,
         ),
     )
     return canonical_anchor
 
 
-def post_analysis_link(conn: Any, config: dict[str, Any], report: dict[str, Any]) -> None:
+def post_analysis_link(
+    conn: Any,
+    config: dict[str, Any],
+    report: dict[str, Any],
+    *,
+    commit: bool = True,
+) -> None:
     """Apply validated semantic and deterministic links as canonical clusters."""
 
     results_table = config["results_table"]
@@ -439,7 +456,6 @@ def post_analysis_link(conn: Any, config: dict[str, Any], report: dict[str, Any]
                 results_table,
                 pattern_result_ids,
                 anchor,
-                confidence,
                 pattern.get("description"),
             )
             pattern["pattern_id"] = str(canonical_anchor)
@@ -474,12 +490,12 @@ def post_analysis_link(conn: Any, config: dict[str, Any], report: dict[str, Any]
                     results_table,
                     [int(result_id)],
                     target_anchor,
-                    score.confidence,
                     match.get("similarity_reasoning"),
                 )
                 match["pattern_id"] = str(canonical_anchor)
 
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -562,7 +578,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[ERROR] Failed to read {path}: {e}", file=sys.stderr)
             continue
 
-        if store_report(conn, config, report, filename=path):
+        if store_report(conn, config, report, filename=path, commit=False):
             bid = report.get("batch_id") or os.path.splitext(os.path.basename(path))[0]
             jobs = (
                 report.get("job_results") or report.get("job_summaries") or report.get("jobs", [])
@@ -572,6 +588,8 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 post_analysis_link(conn, config, report)
             except Exception as e:
+                conn.rollback()
+                inserted -= 1
                 print(f"[WARN] Failed to apply post-analysis links: {e}", file=sys.stderr)
 
     conn.close()

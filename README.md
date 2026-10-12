@@ -191,7 +191,8 @@ Batch reports are written to
 
 `pattern_id` is a durable, derived anchor. It is the earliest result ID in a
 linked issue cluster. The anchor is stored in the existing `cross_job_pattern`
-column, and match strength is stored in `cross_job_pattern_confidence`.
+column. Match confidence remains a report signal, so no additional results-table
+column or migration is required.
 `historical_matches` and `cross_job_patterns` remain report signals, but the
 durable grouping is the canonical `cross_job_pattern` anchor. Every analyzed
 job gets its own result row, and the source-table foreign key always points to

@@ -105,6 +105,7 @@ class JobExecution:
     cost_usd: float | None = None
     usage: dict[str, Any] | None = None
     model_usage: dict[str, dict[str, Any]] | None = None
+    agent_review: str | None = None
 
 
 def _positive_int(value: str) -> int:
@@ -402,7 +403,7 @@ async def _execute_one_job(
                 summary=summary,
             )
         try:
-            summary = write_analysis_summary(artifacts)
+            summary = write_analysis_summary(artifacts, agent_review=result.text)
         except Exception as summary_exc:
             return JobExecution(
                 job_id=rendered_id,
@@ -459,6 +460,7 @@ async def _execute_one_job(
             cost_usd=result.cost_usd,
             usage=result.usage,
             model_usage=result.model_usage,
+            agent_review=result.text,
         )
 
     return JobExecution(
@@ -470,6 +472,7 @@ async def _execute_one_job(
         cost_usd=result.cost_usd if result else None,
         usage=result.usage if result else None,
         model_usage=result.model_usage if result else None,
+        agent_review=result.text if result else None,
     )
 
 
@@ -741,7 +744,7 @@ def _category(value: Any) -> str:
 def _job_summary(execution: JobExecution) -> dict[str, Any]:
     if execution.status != "completed" or execution.summary is None:
         error = execution.error or "Analysis failed"
-        return {
+        summary = {
             "job_id": execution.job_id,
             "status": "failed",
             "root_cause_category": "unknown",
@@ -749,6 +752,9 @@ def _job_summary(execution: JobExecution) -> dict[str, Any]:
             "confidence": "low",
             "analysis_duration_ms": execution.duration_ms,
         }
+        if execution.agent_review:
+            summary["agent_review"] = execution.agent_review
+        return summary
 
     data = execution.summary
     root_cause = data.get("root_cause") or {}
@@ -765,6 +771,8 @@ def _job_summary(execution: JobExecution) -> dict[str, Any]:
         "analysis_path": str(artifacts.analysis_dir) if artifacts else "",
         "historical_matches": [],
     }
+    if execution.agent_review:
+        summary["agent_review"] = execution.agent_review
     job_name = context.get("job_name") or ""
     # The legacy batch report includes catalog_item where it can be parsed from
     # the AAP job name; keep it optional for logs with other naming schemes.
@@ -1085,16 +1093,15 @@ def _store_batch_report(
     dupes: list[dict[str, Any]],
 ) -> bool:
     with pooled_connection(pool) as conn:
-        stored = store_report(conn, database, report, filename=str(report_path))
+        stored = store_report(
+            conn, database, report, filename=str(report_path), commit=False
+        )
         if not stored:
             return False
-        post_analysis_link(conn, database, report)
-    if dupes:
-        try:
-            with pooled_connection(pool) as conn:
-                link_intra_batch_dupes(conn, database, dupes)
-        except psycopg2.Error as exc:
-            logger.warning("Could not link intra-batch duplicate jobs: %s", exc)
+        post_analysis_link(conn, database, report, commit=False)
+        if dupes:
+            link_intra_batch_dupes(conn, database, dupes, commit=False)
+        conn.commit()
     return True
 
 
@@ -1300,14 +1307,17 @@ def run_batch(
             logger.info("Pre-filter matched %d job(s)", len(pre_matched))
             try:
                 with pooled_connection(pool) as conn:
-                    store_pre_matched(conn, database, pre_matched)
+                    store_pre_matched(conn, database, pre_matched, commit=False)
+                    if not analyze_ids and dupes:
+                        link_intra_batch_dupes(conn, database, dupes, commit=False)
+                    conn.commit()
             except psycopg2.Error as exc:
                 logger.error("Failed to store pre-matched jobs: %s", exc)
                 return 1
 
         if not analyze_ids:
             logger.info("No jobs require full RCA")
-            if dupes:
+            if dupes and not pre_matched:
                 try:
                     with pooled_connection(pool) as conn:
                         link_intra_batch_dupes(conn, database, dupes)

@@ -368,7 +368,9 @@ def _recommendation(category: str, summary: str, github_path: str | None) -> dic
     return recommendation
 
 
-def build_analysis_summary(artifacts: AnalysisArtifacts) -> dict[str, Any]:
+def build_analysis_summary(
+    artifacts: AnalysisArtifacts, *, agent_review: str | None = None
+) -> dict[str, Any]:
     """Build a schema-valid Step 5 summary from deterministic Step 1–4 data."""
     job_context = artifacts.job_context
     splunk_logs = artifacts.splunk_logs
@@ -431,14 +433,19 @@ def build_analysis_summary(artifacts: AnalysisArtifacts) -> dict[str, Any]:
         summary_document["analyzed_at"] = analyzed_at
     if contributing_factors:
         summary_document["contributing_factors"] = contributing_factors
+    review = _text(agent_review, 4000)
+    if review:
+        summary_document["agent_review"] = review
 
     jsonschema.validate(summary_document, _SUMMARY_SCHEMA)
     return summary_document
 
 
-def write_analysis_summary(artifacts: AnalysisArtifacts) -> dict[str, Any]:
+def write_analysis_summary(
+    artifacts: AnalysisArtifacts, *, agent_review: str | None = None
+) -> dict[str, Any]:
     """Deterministically build and persist the Step 5 summary artifact."""
-    summary = build_analysis_summary(artifacts)
+    summary = build_analysis_summary(artifacts, agent_review=agent_review)
     save_step(artifacts.analysis_dir, 5, summary)
     return summary
 

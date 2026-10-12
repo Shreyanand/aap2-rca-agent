@@ -21,6 +21,7 @@ _POST_SEMANTIC_THRESHOLDS = {
     "medium": 0.40,
     "low": 0.30,
 }
+_GENERIC_TEXT_TOKENS = {"failed", "failure", "error", "exception", "timeout"}
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,23 @@ def text_similarity(left: str | None, right: str | None) -> float:
     if not left_text or not right_text:
         return 0.0
     return SequenceMatcher(None, left_text, right_text).ratio()
+
+
+def _significant_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in text.casefold().split()
+        if len(token) > 2 and token not in _GENERIC_TEXT_TOKENS
+    }
+
+
+def _pre_analysis_text_is_specific(
+    left_text: str, right_text: str, *, same_catalog: bool
+) -> bool:
+    left_tokens = _significant_tokens(left_text)
+    right_tokens = _significant_tokens(right_text)
+    minimum_tokens = 1 if same_catalog else 3
+    return len(left_tokens) >= minimum_tokens and len(right_tokens) >= minimum_tokens
 
 
 def _clean(value: Any) -> str | None:
@@ -121,6 +139,15 @@ def score_similarity(
 
     if stage == "pre_analysis":
         threshold = 0.75 if same_catalog else 0.90
+        if not _pre_analysis_text_is_specific(left_text, right_text, same_catalog=same_catalog):
+            evidence.append(
+                _evidence(
+                    "observed",
+                    "At least one error text is too generic for a pre-analysis match.",
+                    "shared_scorer",
+                )
+            )
+            return ScoreResult(None, similarity, tuple(evidence))
         if similarity < threshold:
             return ScoreResult(None, similarity, tuple(evidence))
         return ScoreResult("high", similarity, tuple(evidence))

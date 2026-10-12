@@ -309,27 +309,52 @@ def test_build_root_cause_normalizes_causal_chain_and_misidentifications(tmp_pat
     ]
 
 
-def test_find_match_handles_null_historical_summary(monkeypatch, capsys) -> None:
-    from psycopg2 import sql
+def test_post_analysis_link_updates_a_null_anchor_historical_row() -> None:
+    connection, cursor = _connection_and_cursor()
+    target_row = {
+        "id": 50,
+        "catalog_item": "widget",
+        "root_cause_category": "infrastructure",
+        "root_cause_summary": "Worker 7 timed out.",
+        "cross_job_pattern": None,
+    }
+    current_row = {
+        "id": 100,
+        "catalog_item": "widget",
+        "root_cause_category": "infrastructure",
+        "root_cause_summary": "Worker 7 timed out.",
+        "cross_job_pattern": None,
+    }
+    cursor.fetchone.side_effect = [target_row, current_row]
+    report = {
+        "batch_id": "batch_test",
+        "job_summaries": [
+            {
+                "job_id": "123",
+                "status": "analyzed",
+                "result_id": 100,
+                "catalog_item": "widget",
+                "root_cause_category": "infrastructure",
+                "root_cause_summary": "Worker 7 timed out.",
+                "historical_matches": [
+                    {
+                        "matched_result_id": 50,
+                        "recurrence_count": 2,
+                        "similarity_reasoning": "Both jobs time out in worker 7.",
+                        "confidence": "high",
+                    }
+                ],
+            }
+        ],
+    }
 
-    monkeypatch.setattr(
-        store_report,
-        "known_issue_active_sql",
-        lambda _conn, *, table: sql.SQL("TRUE"),
+    store_report.post_analysis_link(connection, {"results_table": "results"}, report)
+
+    update_params = [call.args[1] for call in cursor.execute.call_args_list if len(call.args) > 1]
+    assert any(
+        params[0] == "50"
+        and params[1] == [50, 100]
+        and params[3] == ["50", "100"]
+        and params[4] == [50, 100]
+        for params in update_params
     )
-    cursor = MagicMock()
-    cursor.connection = MagicMock()
-    cursor.fetchall.return_value = [{"id": 7, "root_cause_summary": None}]
-
-    match_id = store_report.find_match(
-        cursor,
-        "results",
-        {
-            "job_id": "123",
-            "root_cause_category": "infrastructure",
-            "catalog_item": "widget",
-            "root_cause_summary": "",
-        },
-    )
-
-    assert match_id == 7

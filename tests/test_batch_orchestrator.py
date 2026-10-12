@@ -343,6 +343,10 @@ def test_job_success_requires_a_verified_upload(
     )
     assert execution.cost_usd == 0.02
     assert execution.usage == {"input_tokens": 20}
+    assert execution.agent_review == "summary written"
+    assert execution.summary is not None
+    assert execution.summary["agent_review"] == "summary written"
+    assert orchestrator._job_summary(execution)["agent_review"] == "summary written"
     if upload_result is True:
         assert execution.status == "completed"
     else:
@@ -409,7 +413,7 @@ def test_batch_exit_status_preserves_reports_and_partial_success(
             "root_cause_summary": "Known issue",
         }
     ]
-    monkeypatch.setattr(orchestrator, "pooled_connection", lambda pool: nullcontext(object()))
+    monkeypatch.setattr(orchestrator, "pooled_connection", lambda pool: nullcontext(Mock()))
     monkeypatch.setattr(orchestrator, "query_job_ids", Mock(return_value=[101, 102, 103]))
     monkeypatch.setattr(orchestrator, "fetch_job_metadata", Mock(return_value={}))
     monkeypatch.setattr(orchestrator, "fetch_known_issues", Mock(return_value=[{"result_id": 9}]))
@@ -486,6 +490,58 @@ def test_failed_representative_falls_back_to_next_duplicate(
     assert [execution.job_id for execution in executions] == ["100", "101"]
     assert executions[-1].job_id == "101"
     assert updated_dupes == [{"job_id": 102, "representative_job_id": 101}]
+
+
+def test_store_batch_report_links_in_one_transaction(monkeypatch: pytest.MonkeyPatch) -> None:
+    connection = Mock()
+    pool = SimpleNamespace(getconn=Mock(return_value=connection), putconn=Mock())
+    store = Mock(return_value=True)
+    post_link = Mock()
+    link_dupes = Mock()
+    monkeypatch.setattr(orchestrator, "store_report", store)
+    monkeypatch.setattr(orchestrator, "post_analysis_link", post_link)
+    monkeypatch.setattr(orchestrator, "link_intra_batch_dupes", link_dupes)
+    report = {"job_summaries": []}
+    dupes = [{"job_id": 102, "representative_job_id": 101}]
+
+    assert orchestrator._store_batch_report(pool, {}, report, Path("report.json"), dupes)
+
+    store.assert_called_once_with(
+        connection,
+        {},
+        report,
+        filename="report.json",
+        commit=False,
+    )
+    post_link.assert_called_once_with(connection, {}, report, commit=False)
+    link_dupes.assert_called_once_with(connection, {}, dupes, commit=False)
+    connection.commit.assert_called_once_with()
+
+
+def test_store_batch_report_rolls_back_when_linking_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = Mock()
+    connection.closed = False
+    pool = SimpleNamespace(getconn=Mock(return_value=connection), putconn=Mock())
+    monkeypatch.setattr(orchestrator, "store_report", Mock(return_value=True))
+    monkeypatch.setattr(
+        orchestrator,
+        "post_analysis_link",
+        Mock(side_effect=OSError("link failed")),
+    )
+
+    with pytest.raises(OSError, match="link failed"):
+        orchestrator._store_batch_report(
+            pool,
+            {},
+            {"job_summaries": []},
+            Path("report.json"),
+            [],
+        )
+
+    connection.commit.assert_not_called()
+    connection.rollback.assert_called_once_with()
 
 
 def test_normalize_semantics_validates_job_and_result_ids() -> None:

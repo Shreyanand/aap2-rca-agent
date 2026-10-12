@@ -83,6 +83,28 @@ def test_pre_analysis_gate_clusters_duplicates_and_preserves_ambiguity_guard() -
     assert dupes == [{"job_id": 21, "representative_job_id": 20}]
 
 
+def test_pre_analysis_gate_does_not_cluster_generic_errors_across_catalogs() -> None:
+    job_metadata = {
+        20: {
+            "job_name": "RHPDS platform.widget.dev-20-create",
+            "error_message": "Failed",
+        },
+        21: {
+            "job_name": "RHPDS platform.other.dev-21-create",
+            "error_message": "Failed",
+        },
+    }
+
+    analyze_ids, _skip_targets, dupes = pre_filter_jobs.pre_analysis_gate(
+        [20, 21],
+        job_metadata,
+        [],
+    )
+
+    assert analyze_ids == [20, 21]
+    assert dupes == []
+
+
 def test_main_delegates_known_issue_filter_to_shared_helper(monkeypatch, capsys) -> None:
     job_ids = [13, 11, 12]
     connection = Mock()

@@ -15,6 +15,17 @@ def test_pre_analysis_uses_stricter_cross_catalog_threshold() -> None:
     assert score_similarity(left, different_catalog, "pre_analysis").confidence is None
 
 
+def test_pre_analysis_rejects_generic_cross_catalog_errors() -> None:
+    result = score_similarity(
+        MatchSignals(catalog_item="widget", text="Failed"),
+        MatchSignals(catalog_item="other", text="Failed"),
+        "pre_analysis",
+    )
+
+    assert result.confidence is None
+    assert any("too generic" in item["description"] for item in result.evidence)
+
+
 def test_post_analysis_semantic_judgment_is_bounded_by_category() -> None:
     left = MatchSignals(
         catalog_item="widget",
