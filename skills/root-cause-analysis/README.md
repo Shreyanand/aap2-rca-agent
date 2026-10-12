@@ -12,10 +12,10 @@ Use this skill when you need to:
 
 ## Overview
 
-This skill uses automated Python scripts for data collection (Steps 1-4) and Claude for analysis (Step 5):
+This skill uses automated Python scripts for data collection (Steps 1-4). In the batch orchestrator, Python also generates the Step 5 summary and Claude provides a read-only review:
 
 1. **Steps 1-4**: Parse job logs, query Splunk, build correlation timeline, fetch GitHub files (all automated via `cli.py analyze`)
-2. **Step 5**: Analyze root causes and generate recommendations (Claude)
+2. **Step 5**: Generate and review the root-cause summary (Python in batch mode; Claude for manual analysis)
 
 ## Setup
 
@@ -220,7 +220,11 @@ All steps are executed automatically by the `cli.py analyze` command:
 
 **GitHub MCP Verification**: If step4 output contains `"error": "all_paths_failed"` or any `"status": "404"` in `paths_tried` arrays, verify 404 errors using MCP tools. See [github_mcp_verification.md](github_mcp_verification.md) for complete verification process.
 
-### Step 5: Analyze and Generate Summary (Claude)
+### Step 5: Analyze and Generate Summary
+
+In batch mode, `rca-batch` deterministically generates
+`step5_analysis_summary.json` before invoking the Skill. The Skill must not
+write analysis files or upload them; it returns a read-only review instead.
 
 **Input files**: Read outputs from steps 1-4 (`step1_job_context.json`, `step3_correlation.json`, `step4_github_fetch_history.json`, and if needed, `step2_splunk_logs.json`).
 
@@ -259,7 +263,7 @@ Analysis results are saved to `$RCA_STATE_DIR/.analysis/<job-id>/`:
 | `step2_splunk_logs.json` | Correlated Splunk pod logs | Python |
 | `step3_correlation.json` | Unified timeline with correlation proof | Python |
 | `step4_github_fetch_history.json` | GitHub fetch results (configs and workload code) | Python (Claude updates for MCP verification) |
-| `step5_analysis_summary.json` | Root cause summary with recommendations | Claude |
+| `step5_analysis_summary.json` | Root cause summary with recommendations | Python in batch mode; Claude in manual mode |
 
 ## Correlation Methods
 

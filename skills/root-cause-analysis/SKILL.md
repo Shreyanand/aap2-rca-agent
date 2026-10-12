@@ -158,6 +158,11 @@ python3 -m venv .venv
 
 ## Step 5: Analyze and Generate Summary (Claude's task)
 
+**Batch orchestrator mode**: When this Skill is invoked by `rca-batch`, Python
+has already generated the Step 5 summary and owns the verified upload. Do not
+write, modify, or delete analysis files and do not run the upload command;
+return your analysis as the query response only.
+
 **Input**: Read the following files in order:
 1. **REQUIRED**: `step1_job_context.json` - Job metadata and failed task details
 2. **REQUIRED**: `step3_correlation.json` - Correlated timeline with relevant pod logs (DO NOT read step2 unless needed)
@@ -292,6 +297,6 @@ See `schemas/summary.schema.json` for complete structure. Example:
 | 2 | `step2_splunk_logs.json` | Python |
 | 3 | `step3_correlation.json` | Python |
 | 4 | `step4_github_fetch_history.json` | Python (Optional Claude updates for MCP verification) |
-| 5 | `step5_analysis_summary.json` | Claude |
+| 5 | `step5_analysis_summary.json` | Python in batch mode; Claude in manual mode |
 
 All files in `$RCA_STATE_DIR/.analysis/<job-id>/`

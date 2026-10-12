@@ -25,9 +25,10 @@ flowchart TD
       Splunk[Query Splunk]
       Correlation[Build correlation timeline]
       GitHub[Fetch AgnosticV config and AgnosticD code]
-      Synthesis[Agent SDK invokes root-cause-analysis Skill]
+      Summary[Deterministic Step 5 summary]
+      Review[Agent SDK invokes root-cause-analysis Skill]
       Upload[Upload analysis to Jumpbox]
-      Parse --> Splunk --> Correlation --> GitHub --> Synthesis --> Upload
+      Parse --> Splunk --> Correlation --> GitHub --> Summary --> Review --> Upload
     end
     Analysis --> Parse
     Upload --> Aggregate[Semantic aggregation: historical matches and cross-job patterns]
@@ -199,7 +200,9 @@ that row. A cluster can therefore be read with a single equality query on
 
 Per-job analysis files are saved under `$RCA_STATE_DIR/.analysis/{job_id}/`:
 job context, Splunk logs, the correlation timeline, GitHub fetch history, and
-the Step 5 analysis summary.
+the Step 5 analysis summary. The batch orchestrator always generates the Step 5
+summary deterministically from Steps 1–4; the Agent SDK review is read-only and
+does not own artifact creation.
 
 ## Deployment and tests
 
