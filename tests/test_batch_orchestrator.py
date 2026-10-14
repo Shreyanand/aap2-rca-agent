@@ -39,6 +39,21 @@ def _config(tmp_path: Path, *, max_parallel_jobs: int = 2) -> Config:
     )
 
 
+def _write_summary(analysis_dir: Path) -> None:
+    (analysis_dir / "step5_analysis_summary.json").write_text(
+        json.dumps(
+            {
+                "root_cause": {
+                    "summary": "A test failure",
+                    "category": "infrastructure",
+                    "confidence": "high",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_main_parses_batch_options_and_calls_python_orchestrator(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -163,6 +178,7 @@ def test_job_failures_are_isolated_from_other_jobs(
         )
 
     async def fake_sdk_query(*args: object, **kwargs: object) -> orchestrator.SDKQueryResult:
+        _write_summary(tmp_path / ".analysis" / "102")
         return orchestrator.SDKQueryResult(
             is_error=False,
             cost_usd=0.02,
@@ -219,6 +235,7 @@ def test_job_concurrency_bounds_analysis_and_skill_as_one_unit(
     async def fake_sdk_query(prompt: str, *args: object, **kwargs: object) -> orchestrator.SDKQueryResult:
         job_id = prompt.split("AAP job ", 1)[1].split(" ", 1)[0]
         await asyncio.sleep(0.04)
+        _write_summary(tmp_path / ".analysis" / job_id)
         return orchestrator.SDKQueryResult(
             is_error=False,
             cost_usd=0.01,
@@ -246,52 +263,19 @@ def test_job_concurrency_bounds_analysis_and_skill_as_one_unit(
     assert active_jobs == set()
 
 
-def test_retry_replaces_a_previous_step5_summary(
+def test_retry_rejects_a_previous_step5_summary(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config = _config(tmp_path)
     analysis_dir = config.analysis_dir / "101"
     analysis_dir.mkdir(parents=True)
-    summary_path = analysis_dir / "step5_analysis_summary.json"
-    summary_path.write_text('{"root_cause": {"summary": "stale summary"}}', encoding="utf-8")
-    artifacts = AnalysisArtifacts("101", analysis_dir, {}, {}, {}, {})
-    monkeypatch.setattr(orchestrator, "run_analysis", Mock(return_value=artifacts))
-
-    async def fake_sdk_query(*args: object, **kwargs: object) -> orchestrator.SDKQueryResult:
-        summary_path.write_text('{"root_cause": {"summary": "agent overwrite"}}', encoding="utf-8")
-        return orchestrator.SDKQueryResult(False, 0.02, {}, "No summary written")
-
-    monkeypatch.setattr(orchestrator, "_run_sdk_query", fake_sdk_query)
-    upload = Mock(return_value=True)
-    monkeypatch.setattr(orchestrator, "upload_to_jumpbox", upload)
-
-    execution = asyncio.run(
-        orchestrator._analyze_jobs([101], config, object(), cwd=tmp_path)
-    )[0]
-
-    assert execution.status == "completed"
-    assert execution.summary is not None
-    assert execution.summary["root_cause"]["summary"] != "stale summary"
-    assert summary_path.is_file()
-    upload.assert_called_once()
-
-
-def test_skill_failure_still_creates_the_deterministic_step5_summary(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    config = _config(tmp_path)
-    analysis_dir = config.analysis_dir / "101"
-    analysis_dir.mkdir(parents=True)
+    _write_summary(analysis_dir)
     artifacts = AnalysisArtifacts("101", analysis_dir, {}, {}, {}, {})
     monkeypatch.setattr(orchestrator, "run_analysis", Mock(return_value=artifacts))
     monkeypatch.setattr(
         orchestrator,
         "_run_sdk_query",
-        AsyncMock(
-            return_value=orchestrator.SDKQueryResult(
-                True, 0.02, {}, "agent failed", errors=("agent failed",)
-            )
-        ),
+        AsyncMock(return_value=orchestrator.SDKQueryResult(False, 0.02, {}, "No summary written")),
     )
     upload = Mock(return_value=True)
     monkeypatch.setattr(orchestrator, "upload_to_jumpbox", upload)
@@ -301,9 +285,8 @@ def test_skill_failure_still_creates_the_deterministic_step5_summary(
     )[0]
 
     assert execution.status == "failed"
-    assert execution.stage == "skill_execution"
-    assert execution.summary is not None
-    assert (analysis_dir / "step5_analysis_summary.json").is_file()
+    assert execution.stage == "step5_missing"
+    assert not (analysis_dir / "step5_analysis_summary.json").exists()
     upload.assert_not_called()
 
 
@@ -318,6 +301,7 @@ def test_job_success_requires_a_verified_upload(
     monkeypatch.setattr(orchestrator, "run_analysis", Mock(return_value=artifacts))
 
     async def fake_sdk_query(*args: object, **kwargs: object) -> orchestrator.SDKQueryResult:
+        _write_summary(analysis_dir)
         return orchestrator.SDKQueryResult(
             False, 0.02, {"input_tokens": 20}, "summary written", session_id="job-session"
         )
@@ -343,10 +327,6 @@ def test_job_success_requires_a_verified_upload(
     )
     assert execution.cost_usd == 0.02
     assert execution.usage == {"input_tokens": 20}
-    assert execution.agent_review == "summary written"
-    assert execution.summary is not None
-    assert execution.summary["agent_review"] == "summary written"
-    assert orchestrator._job_summary(execution)["agent_review"] == "summary written"
     if upload_result is True:
         assert execution.status == "completed"
     else:

@@ -25,7 +25,7 @@ import psycopg2.extras
 from psycopg2.pool import ThreadedConnectionPool
 
 from rca.analysis.jumpbox_io import upload_to_jumpbox
-from rca.analysis.pipeline import AnalysisArtifacts, run_analysis, write_analysis_summary
+from rca.analysis.pipeline import AnalysisArtifacts, run_analysis
 from rca.batch.fetch_known_issues import fetch_known_issues
 from rca.batch.pre_filter_jobs import (
     fetch_job_metadata,
@@ -105,7 +105,6 @@ class JobExecution:
     cost_usd: float | None = None
     usage: dict[str, Any] | None = None
     model_usage: dict[str, dict[str, Any]] | None = None
-    agent_review: str | None = None
 
 
 def _positive_int(value: str) -> int:
@@ -317,13 +316,30 @@ Invoke the Skill tool for this job:
 Skill({{skill: 'root-cause-analysis', args: '{job_id}'}})
 
 The Python batch orchestrator has already completed deterministic Steps 1–4
-and generated the schema-valid Step 5 summary in
-`{artifacts.analysis_dir / 'step5_analysis_summary.json'}`. Review the
-existing artifacts and return a concise analysis for this job. Do not rerun
-Steps 1–4, fetch the job log again, create or modify any analysis files, or
-follow the Skill's instructions to write Step 5 or upload artifacts. The Python
-orchestrator owns deterministic artifact generation and performs the required
-verified upload."""
+and saved their artifacts in `{artifacts.analysis_dir}`. Do not rerun those
+steps, fetch the job log again, or overwrite their files. Follow the Skill's
+Step 5 analysis guidance using the existing artifacts, and write the summary to
+`{artifacts.analysis_dir / 'step5_analysis_summary.json'}`. After writing the
+summary, stop and briefly report whether it was written. Do not run the Skill's
+upload command: the Python orchestrator will perform and verify the required
+upload after validating your summary."""
+
+
+def _read_step5_summary(artifacts: AnalysisArtifacts) -> dict[str, Any]:
+    path = artifacts.analysis_dir / "step5_analysis_summary.json"
+    if not path.is_file():
+        raise FileNotFoundError(f"Step 5 summary was not created: {path}")
+    try:
+        with path.open(encoding="utf-8") as stream:
+            data = json.load(stream)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Could not read Step 5 summary {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"Step 5 summary must contain a JSON object: {path}")
+    root_cause = data.get("root_cause")
+    if not isinstance(root_cause, dict) or not isinstance(root_cause.get("summary"), str):
+        raise ValueError(f"Step 5 summary has no root_cause.summary: {path}")
+    return data
 
 
 async def _execute_one_job(
@@ -355,18 +371,9 @@ async def _execute_one_job(
         )
 
     try:
-        summary = write_analysis_summary(artifacts)
-    except Exception as exc:
-        return JobExecution(
-            job_id=rendered_id,
-            status="failed",
-            duration_ms=max(0, int((time.monotonic() - started) * 1000)),
-            artifacts=artifacts,
-            error=f"Step 5 summary generation failed: {exc}"[:1000],
-            stage="summary_generation",
-        )
-
-    try:
+        # A retry reuses the job directory; only a summary written by this
+        # query may qualify the current execution as successful.
+        (artifacts.analysis_dir / "step5_analysis_summary.json").unlink(missing_ok=True)
         result = await _run_sdk_query(
             _skill_prompt(rendered_id, artifacts),
             config,
@@ -376,20 +383,6 @@ async def _execute_one_job(
         )
         if result.is_error:
             detail = "; ".join(result.errors) or result.text or "agent reported an error"
-            try:
-                summary = write_analysis_summary(artifacts)
-            except Exception as summary_exc:
-                return JobExecution(
-                    job_id=rendered_id,
-                    status="failed",
-                    duration_ms=max(0, int((time.monotonic() - started) * 1000)),
-                    artifacts=artifacts,
-                    error=f"Step 5 summary generation failed: {summary_exc}"[:1000],
-                    stage="summary_generation",
-                    cost_usd=result.cost_usd,
-                    usage=result.usage,
-                    model_usage=result.model_usage,
-                )
             return JobExecution(
                 job_id=rendered_id,
                 status="failed",
@@ -400,27 +393,21 @@ async def _execute_one_job(
                 cost_usd=result.cost_usd,
                 usage=result.usage,
                 model_usage=result.model_usage,
-                summary=summary,
             )
-        try:
-            summary = write_analysis_summary(artifacts, agent_review=result.text)
-        except Exception as summary_exc:
-            return JobExecution(
-                job_id=rendered_id,
-                status="failed",
-                duration_ms=max(0, int((time.monotonic() - started) * 1000)),
-                artifacts=artifacts,
-                error=f"Step 5 summary generation failed: {summary_exc}"[:1000],
-                stage="summary_generation",
-                cost_usd=result.cost_usd,
-                usage=result.usage,
-                model_usage=result.model_usage,
-            )
+        summary = _read_step5_summary(artifacts)
+    except FileNotFoundError as exc:
+        return JobExecution(
+            job_id=rendered_id,
+            status="failed",
+            duration_ms=max(0, int((time.monotonic() - started) * 1000)),
+            artifacts=artifacts,
+            error=str(exc)[:1000],
+            stage="step5_missing",
+            cost_usd=result.cost_usd if result else None,
+            usage=result.usage if result else None,
+            model_usage=result.model_usage if result else None,
+        )
     except Exception as exc:
-        try:
-            summary = write_analysis_summary(artifacts)
-        except Exception:
-            pass
         return JobExecution(
             job_id=rendered_id,
             status="failed",
@@ -431,7 +418,6 @@ async def _execute_one_job(
             cost_usd=result.cost_usd if result else None,
             usage=result.usage if result else None,
             model_usage=result.model_usage if result else None,
-            summary=summary,
         )
 
     try:
@@ -460,7 +446,6 @@ async def _execute_one_job(
             cost_usd=result.cost_usd,
             usage=result.usage,
             model_usage=result.model_usage,
-            agent_review=result.text,
         )
 
     return JobExecution(
@@ -472,7 +457,6 @@ async def _execute_one_job(
         cost_usd=result.cost_usd if result else None,
         usage=result.usage if result else None,
         model_usage=result.model_usage if result else None,
-        agent_review=result.text if result else None,
     )
 
 
@@ -744,7 +728,7 @@ def _category(value: Any) -> str:
 def _job_summary(execution: JobExecution) -> dict[str, Any]:
     if execution.status != "completed" or execution.summary is None:
         error = execution.error or "Analysis failed"
-        summary = {
+        return {
             "job_id": execution.job_id,
             "status": "failed",
             "root_cause_category": "unknown",
@@ -752,9 +736,6 @@ def _job_summary(execution: JobExecution) -> dict[str, Any]:
             "confidence": "low",
             "analysis_duration_ms": execution.duration_ms,
         }
-        if execution.agent_review:
-            summary["agent_review"] = execution.agent_review
-        return summary
 
     data = execution.summary
     root_cause = data.get("root_cause") or {}
@@ -771,8 +752,6 @@ def _job_summary(execution: JobExecution) -> dict[str, Any]:
         "analysis_path": str(artifacts.analysis_dir) if artifacts else "",
         "historical_matches": [],
     }
-    if execution.agent_review:
-        summary["agent_review"] = execution.agent_review
     job_name = context.get("job_name") or ""
     # The legacy batch report includes catalog_item where it can be parsed from
     # the AAP job name; keep it optional for logs with other naming schemes.
