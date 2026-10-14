@@ -19,10 +19,10 @@ CREATE TABLE aap2_job_results (
     --   evidence[], causal_chain[], misidentifications[], recommendations[] }
     root_cause                     JSONB,
 
-    -- Same-batch grouping signal, written by store_cross_patterns().
-    -- Unconfirmed: rendered as "possibly related", never as a verified match.
-    cross_job_pattern              TEXT,
-    cross_job_pattern_description  TEXT,
+    -- Relationship to the canonical result row for the same issue cluster.
+    -- The anchor row is NULL; every other member points directly to it.
+    related_result_id              INTEGER REFERENCES aap2_job_results(id),
+    related_result_confidence      TEXT,
 
     -- ticket_key is the short Jira key (RHDP-1234); the MCP tools take a key,
     -- not a URL. ticket_resolve_datetime_gmt drives the known-issue
@@ -46,8 +46,8 @@ CREATE TABLE aap2_job_results (
 --   created_at                     NEW  removes parsing timestamps out of batch_id
 --   UNIQUE (batch_id, job_id)      NEW  constraint the ON CONFLICT assumes exists
 --
---   cross_job_pattern              unchanged
---   cross_job_pattern_description  unchanged
+--   cross_job_pattern              -> related_result_id
+--   cross_job_pattern_description  -> removed (confidence annotates the link)
 --
 -- Not added: cross_job_pattern_github_path. A shared offending file is just a
 -- 'related_job' evidence entry's github_path.

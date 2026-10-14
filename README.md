@@ -188,15 +188,15 @@ Batch reports are written to
 }
 ```
 
-`pattern_id` is a durable, derived anchor. It is the earliest result ID in a
-linked issue cluster. The anchor is stored in the existing `cross_job_pattern`
-column. Match confidence remains a report signal, so no additional results-table
-column or migration is required.
+`pattern_id` is a report signal representing the canonical result ID for a
+linked issue cluster. The durable relationship is stored in
+`related_result_id`, with `related_result_confidence` annotating the link. The
+anchor row has a null `related_result_id`; every other cluster member points
+directly to that anchor.
 `historical_matches` and `cross_job_patterns` remain report signals, but the
-durable grouping is the canonical `cross_job_pattern` anchor. Every analyzed
-job gets its own result row, and the source-table foreign key always points to
-that row. A cluster can therefore be read with a single equality query on
-`cross_job_pattern` and does not require recursion.
+durable grouping is the canonical `related_result_id` anchor. Every analyzed
+job gets its own result row. A cluster can therefore be read with a single
+equality query on `related_result_id` and does not require recursion.
 
 Per-job analysis files are saved under `$RCA_STATE_DIR/.analysis/{job_id}/`:
 job context, Splunk logs, the correlation timeline, GitHub fetch history, and

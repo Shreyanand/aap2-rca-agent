@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from rca.batch.store_report import store_report
+from rca.batch.store_report import post_analysis_link, store_report
 from tests.integration.conftest import RESULTS_TABLE, SOURCE_TABLE
 
 pytestmark = pytest.mark.integration
@@ -106,3 +106,68 @@ def test_store_report_upserts_on_conflict(db) -> None:
         (count,) = cur.fetchone()
 
     assert count == 1
+
+
+def test_post_analysis_link_persists_related_result(db) -> None:
+    for job_id in (31, 32):
+        _insert_source_job(db, job_id)
+
+    historical_report = {
+        "batch_id": "batch_test_historical",
+        "job_summaries": [
+            {
+                "job_id": "31",
+                "status": "analyzed",
+                "root_cause_category": "infrastructure",
+                "root_cause_summary": "Worker 7 timed out.",
+                "confidence": "high",
+                "catalog_item": "widget",
+            }
+        ],
+    }
+    assert store_report(db, _config(), historical_report, commit=False)
+    historical_result_id = historical_report["job_summaries"][0]["result_id"]
+
+    current_report = {
+        "batch_id": "batch_test_current",
+        "job_summaries": [
+            {
+                "job_id": "32",
+                "status": "analyzed",
+                "root_cause_category": "infrastructure",
+                "root_cause_summary": "Worker 7 timed out.",
+                "confidence": "high",
+                "catalog_item": "widget",
+                "historical_matches": [
+                    {
+                        "matched_result_id": historical_result_id,
+                        "recurrence_count": 2,
+                        "similarity_reasoning": "Both jobs time out in worker 7.",
+                        "confidence": "high",
+                    }
+                ],
+            }
+        ],
+    }
+    assert store_report(db, _config(), current_report, commit=False)
+    post_analysis_link(db, _config(), current_report, commit=False)
+    db.commit()
+
+    with db.cursor() as cur:
+        cur.execute(
+            f"SELECT id, related_result_id, related_result_confidence"
+            f" FROM {RESULTS_TABLE} ORDER BY id"
+        )
+        rows = cur.fetchall()
+        cur.execute(
+            f"SELECT aap2_job_results_fk_id FROM {SOURCE_TABLE} WHERE job_id = 32"
+        )
+        (source_fk_id,) = cur.fetchone()
+
+    assert rows[0] == (historical_result_id, None, None)
+    assert rows[1] == (
+        current_report["job_summaries"][0]["result_id"],
+        historical_result_id,
+        "high",
+    )
+    assert source_fk_id == historical_result_id

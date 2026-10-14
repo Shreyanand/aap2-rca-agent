@@ -105,17 +105,20 @@ def test_post_analysis_link_persists_derived_pattern_id() -> None:
             "catalog_item": "widget",
             "root_cause_category": "infrastructure",
             "root_cause_summary": "Worker 7 timed out.",
-            "cross_job_pattern": None,
+            "related_result_id": None,
+            "related_result_confidence": None,
         },
         {
             "id": 43,
             "catalog_item": "widget",
             "root_cause_category": "infrastructure",
             "root_cause_summary": "Worker 7 timed out.",
-            "cross_job_pattern": None,
+            "related_result_id": None,
+            "related_result_confidence": None,
         },
     ]
     cursor.fetchone.side_effect = result_rows + result_rows
+    cursor.fetchall.return_value = result_rows
     report = {
         "batch_id": "batch_test",
         "job_summaries": [
@@ -148,16 +151,23 @@ def test_post_analysis_link_persists_derived_pattern_id() -> None:
         ],
     }
 
-    store_report.post_analysis_link(connection, {"results_table": "results"}, report)
+    store_report.post_analysis_link(
+        connection, {"results_table": "results", "source_table": "events"}, report
+    )
 
     update_params = [call.args[1] for call in cursor.execute.call_args_list if len(call.args) > 1]
     assert any(
-        params[0] == "42"
-        and params[1] == [42, 43]
-        and params[3] == [42, 43]
-        and params[4] == "high"
+        len(params) >= 6
+        and
+        params[0] == 42
+        and params[1] == 42
+        and params[2] == 42
+        and params[3] == "high"
+        and params[4] == [42, 43]
+        and params[5] == [42, 43]
         for params in update_params
     )
+    assert report["cross_job_patterns"][0]["pattern_id"] == "42"
     connection.commit.assert_called_once_with()
 
 
@@ -316,16 +326,19 @@ def test_post_analysis_link_updates_a_null_anchor_historical_row() -> None:
         "catalog_item": "widget",
         "root_cause_category": "infrastructure",
         "root_cause_summary": "Worker 7 timed out.",
-        "cross_job_pattern": None,
+        "related_result_id": None,
+        "related_result_confidence": None,
     }
     current_row = {
         "id": 100,
         "catalog_item": "widget",
         "root_cause_category": "infrastructure",
         "root_cause_summary": "Worker 7 timed out.",
-        "cross_job_pattern": None,
+        "related_result_id": None,
+        "related_result_confidence": None,
     }
     cursor.fetchone.side_effect = [target_row, current_row]
+    cursor.fetchall.return_value = [current_row]
     report = {
         "batch_id": "batch_test",
         "job_summaries": [
@@ -348,13 +361,21 @@ def test_post_analysis_link_updates_a_null_anchor_historical_row() -> None:
         ],
     }
 
-    store_report.post_analysis_link(connection, {"results_table": "results"}, report)
+    store_report.post_analysis_link(
+        connection, {"results_table": "results", "source_table": "events"}, report
+    )
 
     update_params = [call.args[1] for call in cursor.execute.call_args_list if len(call.args) > 1]
     assert any(
-        params[0] == "50"
-        and params[1] == [50, 100]
-        and params[3] == ["50", "100"]
-        and params[4] == [50, 100]
+        len(params) >= 6
+        and
+        params[0] == 50
+        and params[1] == 50
+        and params[2] == 50
+        and params[3] == "high"
+        and params[4] == [100]
+        and params[5] == [50, 100]
         for params in update_params
     )
+    assert (50, "123") in update_params
+    assert report["job_summaries"][0]["historical_matches"][0]["pattern_id"] == "50"

@@ -323,7 +323,7 @@ def _fetch_result(
         psycopg2.sql.SQL(
             """SELECT id, catalog_item, root_cause_category,
                       root_cause->>'summary' AS root_cause_summary,
-                      cross_job_pattern
+                      related_result_id, related_result_confidence
                FROM {} WHERE id = %s
                FOR UPDATE"""
         ).format(psycopg2.sql.Identifier(results_table)),
@@ -339,24 +339,23 @@ def _fetch_result(
         "catalog_item": row[1],
         "root_cause_category": row[2],
         "root_cause_summary": row[3],
-        "cross_job_pattern": row[4],
+        "related_result_id": row[4],
+        "related_result_confidence": row[5],
     }
 
 
-def _canonical_anchor(row: dict[str, Any]) -> int:
-    candidate = row.get("cross_job_pattern")
-    try:
-        return int(candidate) if candidate is not None else int(row["id"])
-    except (TypeError, ValueError):
-        return int(row["id"])
-
-
 def _resolved_anchor(cur: Any, results_table: str, row: dict[str, Any]) -> int:
-    candidate = _canonical_anchor(row)
-    if candidate == int(row["id"]):
-        return candidate
-    anchor_row = _fetch_result(cur, results_table, candidate)
-    return candidate if anchor_row is not None else int(row["id"])
+    current_id = int(row["id"])
+    candidate = row.get("related_result_id")
+    seen: set[int] = set()
+    while candidate is not None and int(candidate) not in seen:
+        seen.add(int(candidate))
+        anchor_row = _fetch_result(cur, results_table, int(candidate))
+        if anchor_row is None:
+            return current_id
+        current_id = int(anchor_row["id"])
+        candidate = anchor_row.get("related_result_id")
+    return current_id
 
 
 def _assign_cluster(
@@ -364,7 +363,7 @@ def _assign_cluster(
     results_table: str,
     result_ids: list[int],
     target_anchor: int,
-    description: str | None,
+    confidence: Confidence,
 ) -> int:
     existing_rows = [_fetch_result(cur, results_table, result_id) for result_id in result_ids]
     if any(row is None for row in existing_rows):
@@ -377,25 +376,47 @@ def _assign_cluster(
     }
     existing_anchors.add(target_anchor)
     canonical_anchor = min(existing_anchors)
+    affected_ids = set(result_ids)
+    cur.execute(
+        psycopg2.sql.SQL(
+            """SELECT id, related_result_confidence
+               FROM {}
+               WHERE id = ANY(%s) OR related_result_id = ANY(%s)
+               FOR UPDATE"""
+        ).format(psycopg2.sql.Identifier(results_table)),
+        (
+            sorted(result_ids),
+            sorted(existing_anchors),
+        ),
+    )
+    for row in cur.fetchall():
+        row_id = row["id"] if isinstance(row, Mapping) else row[0]
+        row_confidence = (
+            row.get("related_result_confidence")
+            if isinstance(row, Mapping)
+            else row[1]
+        )
+        affected_ids.add(int(row_id))
+        if row_confidence in ("high", "medium", "low"):
+            confidence = weakest_confidence(
+                [confidence, row_confidence]
+            ) or confidence
 
-    anchor_values = [str(anchor) for anchor in existing_anchors]
-    anchor_ids = sorted(existing_anchors)
     cur.execute(
         psycopg2.sql.SQL(
             """UPDATE {}
-               SET cross_job_pattern = %s,
-                   cross_job_pattern_description = CASE
-                       WHEN id = ANY(%s) THEN %s
-                       ELSE cross_job_pattern_description
-                   END,
-               WHERE cross_job_pattern = ANY(%s) OR id = ANY(%s)"""
+               SET related_result_id = CASE WHEN id = %s THEN NULL ELSE %s END,
+                   related_result_confidence =
+                       CASE WHEN id = %s THEN NULL ELSE %s END
+               WHERE id = ANY(%s) OR related_result_id = ANY(%s)"""
         ).format(psycopg2.sql.Identifier(results_table)),
         (
-            str(canonical_anchor),
-            anchor_ids,
-            description,
-            anchor_values,
-            anchor_ids,
+            canonical_anchor,
+            canonical_anchor,
+            canonical_anchor,
+            confidence,
+            sorted(affected_ids),
+            sorted(existing_anchors),
         ),
     )
     return canonical_anchor
@@ -411,6 +432,7 @@ def post_analysis_link(
     """Apply validated semantic and deterministic links as canonical clusters."""
 
     results_table = config["results_table"]
+    source_table = config["source_table"]
     jobs = report.get("job_results") or report.get("job_summaries") or report.get("jobs", [])
     jobs_by_id = {str(job.get("job_id")): job for job in jobs}
     result_ids_by_job = {
@@ -456,11 +478,15 @@ def post_analysis_link(
                 results_table,
                 pattern_result_ids,
                 anchor,
-                pattern.get("description"),
+                confidence,
             )
             pattern["pattern_id"] = str(canonical_anchor)
 
         for job in jobs:
+            job_id = str(job.get("job_id", ""))
+            if not job_id:
+                continue
+            source_match_result_id: int | None = None
             for match in job.get("historical_matches", []) or []:
                 matched_result_id = match.get("matched_result_id")
                 if matched_result_id is None:
@@ -485,14 +511,25 @@ def post_analysis_link(
                 if result_id is None:
                     continue
                 target_anchor = _resolved_anchor(cur, results_table, target_row)
+                if source_match_result_id is None:
+                    source_match_result_id = target_anchor
                 canonical_anchor = _assign_cluster(
                     cur,
                     results_table,
                     [int(result_id)],
                     target_anchor,
-                    match.get("similarity_reasoning"),
+                    score.confidence,
                 )
                 match["pattern_id"] = str(canonical_anchor)
+            if source_match_result_id is not None:
+                cur.execute(
+                    psycopg2.sql.SQL(
+                        """UPDATE {}
+                           SET aap2_job_results_fk_id = %s, ai_processed = TRUE
+                           WHERE job_id = %s"""
+                    ).format(psycopg2.sql.Identifier(source_table)),
+                    (source_match_result_id, job_id),
+                )
 
     if commit:
         conn.commit()
