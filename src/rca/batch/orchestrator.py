@@ -27,7 +27,7 @@ from psycopg2.pool import ThreadedConnectionPool
 from rca.analysis.jumpbox_io import upload_to_jumpbox
 from rca.analysis.pipeline import AnalysisArtifacts, run_analysis
 from rca.batch.fetch_known_issues import fetch_known_issues
-from rca.batch.match import text_similarity
+from rca.batch.match import MatchSignals, score_similarity
 from rca.batch.pre_filter_jobs import (
     fetch_job_metadata,
     fetch_recent_results,
@@ -48,7 +48,6 @@ logger = logging.getLogger("rca.batch")
 
 DEFAULT_LOOKBACK_HOURS = 4
 DEFAULT_KNOWN_ISSUE_LIMIT = 50
-DETERMINISTIC_MATCH_THRESHOLD = 0.85
 _PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 _CATEGORY_NAMES = {
     "application_bug": "Application bug",
@@ -675,7 +674,7 @@ def _normalize_semantics(
                 for match in matches_by_job.get(job_id, [])
             }
             if pattern_ids:
-                item["pattern_id"] = min(pattern_ids)
+                item["pattern_id"] = _min_pattern_id(pattern_ids)
                 if len(pattern_ids) > 1:
                     item["confidence"] = "low"
             shared_path = pattern.get("shared_github_path")
@@ -721,9 +720,29 @@ def _confidence(value: Any) -> str:
     return candidate if candidate in _VALID_CONFIDENCE else "low"
 
 
+def _min_pattern_id(pattern_ids: set[str]) -> str:
+    """Pick the canonical pattern_id, numerically where possible.
+
+    pattern_id is usually a numeric result id as a string (fetch_known_issues),
+    but tests also exercise opaque non-numeric identifiers, so fall back to a
+    plain string min rather than assuming every value parses as an int.
+    """
+    try:
+        return str(min(int(pattern_id) for pattern_id in pattern_ids))
+    except (TypeError, ValueError):
+        return min(pattern_ids)
+
+
 def _deterministic_historical_matches(
     job_summaries: list[dict[str, Any]], known_issues: list[dict[str, Any]]
 ) -> None:
+    """Match jobs against known issues using match.py's shared scorer.
+
+    Only an unambiguous "high" confidence result counts: this path has no
+    semantic judgment behind it, so unlike post_analysis_link it never
+    accepts a medium/low-confidence deterministic match.
+    """
+
     for summary in job_summaries:
         if summary.get("status") != "analyzed":
             continue
@@ -732,7 +751,7 @@ def _deterministic_historical_matches(
         catalog_item = summary.get("catalog_item")
         summary_text = summary.get("root_cause_summary")
         best_issue: dict[str, Any] | None = None
-        best_similarity = DETERMINISTIC_MATCH_THRESHOLD
+        best_similarity = 0.0
 
         for issue in known_issues:
             if category is None or catalog_item is None:
@@ -742,19 +761,31 @@ def _deterministic_historical_matches(
             if issue.get("catalog_item") != catalog_item:
                 continue
 
-            similarity = text_similarity(summary_text, issue.get("root_cause_summary"))
-            if similarity < best_similarity:
+            score = score_similarity(
+                MatchSignals(catalog_item=catalog_item, text=summary_text, category=category),
+                MatchSignals(
+                    catalog_item=issue.get("catalog_item"),
+                    text=issue.get("root_cause_summary"),
+                    category=issue.get("root_cause_category"),
+                ),
+                "post_analysis",
+            )
+            if score.confidence != "high" or score.score < best_similarity:
                 continue
 
             best_issue = issue
-            best_similarity = similarity
+            best_similarity = score.score
 
         if best_issue is None:
             summary["historical_matches"] = []
             continue
 
-        result_id = int(best_issue["result_id"])
-        recurrence_count = max(1, int(best_issue.get("recurrence_count", 1)))
+        try:
+            result_id = int(best_issue["result_id"])
+            recurrence_count = max(1, int(best_issue.get("recurrence_count", 1)))
+        except (KeyError, TypeError, ValueError):
+            summary["historical_matches"] = []
+            continue
         summary["historical_matches"] = [
             {
                 "matched_result_id": result_id,
@@ -764,6 +795,10 @@ def _deterministic_historical_matches(
                 ),
                 "pattern_id": str(best_issue.get("pattern_id") or result_id),
                 "confidence": "high",
+                # Not derived from the LLM's structured output (_normalize_semantics
+                # builds its match dicts from a fixed set of keys that excludes this
+                # one), so post_analysis_link can trust it to gate strict re-validation.
+                "match_source": "deterministic_fallback",
                 "evidence": [
                     {
                         "statement_type": "observed",
@@ -1315,7 +1350,7 @@ def run_batch(
                 recent_results,
                 use_history=not no_pre_filter,
             )
-        except ValueError as exc:
+        except (ValueError, KeyError, TypeError) as exc:
             logger.warning("Pre-analysis gate failed; analyzing all jobs: %s", exc)
             analyze_ids, skip_targets, dupes = list(job_ids), {}, []
 
@@ -1366,13 +1401,10 @@ def run_batch(
                 return 1
 
         if not analyze_ids:
+            # Every cluster representative was skip-matched, so skip_targets (and
+            # therefore pre_matched) is non-empty, and dupes were already linked
+            # above alongside pre_matched. There's nothing left to link here.
             logger.info("No jobs require full RCA")
-            if dupes and not pre_matched:
-                try:
-                    with pooled_connection(pool) as conn:
-                        link_intra_batch_dupes(conn, database, dupes)
-                except psycopg2.Error as exc:
-                    logger.warning("Could not link intra-batch duplicates: %s", exc)
             prepare_jira_tickets({"batch_id": batch_id, "job_summaries": []})
             logger.info("[SUCCESS] Batch RCA completed")
             return 0

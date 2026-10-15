@@ -145,6 +145,7 @@ def test_main_delegates_known_issue_filter_to_shared_helper(monkeypatch, capsys)
                 "recent_result_summary": "Repeated connection reset",
             }
         ],
+        "dupes": [],
     }
     fetch_recent_results = Mock(return_value=recent_results)
     fetch_job_metadata = Mock(return_value=job_metadata)
@@ -166,3 +167,31 @@ def test_main_delegates_known_issue_filter_to_shared_helper(monkeypatch, capsys)
     pre_analysis_gate.assert_called_once_with(job_ids, job_metadata, recent_results)
     connection.close.assert_called_once_with()
     assert json.loads(capsys.readouterr().out) == expected
+
+
+def test_main_includes_intra_batch_dupes_in_output(monkeypatch, capsys) -> None:
+    connection = Mock()
+    database_config = {
+        "name": "rca",
+        "user": "agent",
+        "password": "secret",
+        "source_table": "events",
+        "results_table": "results",
+    }
+    pre_analysis_gate = Mock(
+        return_value=([13], {}, [{"job_id": 12, "representative_job_id": 13}])
+    )
+
+    monkeypatch.setattr(pre_filter_jobs.sys, "stdin", StringIO("13\n12\n"))
+    monkeypatch.setattr(
+        pre_filter_jobs, "load_database_config", Mock(return_value=database_config)
+    )
+    monkeypatch.setattr(pre_filter_jobs, "connect_db", Mock(return_value=connection))
+    monkeypatch.setattr(pre_filter_jobs, "fetch_recent_results", Mock(return_value=[]))
+    monkeypatch.setattr(pre_filter_jobs, "fetch_job_metadata", Mock(return_value={}))
+    monkeypatch.setattr(pre_filter_jobs, "pre_analysis_gate", pre_analysis_gate)
+
+    assert pre_filter_jobs.main([]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["dupes"] == [{"job_id": 12, "representative_job_id": 13}]

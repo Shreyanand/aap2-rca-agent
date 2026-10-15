@@ -284,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
                 config["source_table"],
                 job_ids,
             )
-            analyze_ids, skip_targets, _dupes = pre_analysis_gate(
+            analyze_ids, skip_targets, dupes = pre_analysis_gate(
                 job_ids,
                 job_metadata,
                 recent_results,
@@ -294,7 +294,7 @@ def main(argv: list[str] | None = None) -> int:
                 recent_results,
                 job_ids,
             )
-            result = {"analyze": analyze_ids, "pre_matched": pre_matched}
+            result = {"analyze": analyze_ids, "pre_matched": pre_matched, "dupes": dupes}
 
     except psycopg2.Error as e:
         print(f"Query failed: {e}", file=sys.stderr)

@@ -546,6 +546,7 @@ def post_analysis_link(
     source_table = config["source_table"]
     jobs = report.get("job_results") or report.get("job_summaries") or report.get("jobs", [])
     jobs_by_id = {str(job.get("job_id")): job for job in jobs}
+    job_index_by_id = {str(job.get("job_id")): index for index, job in enumerate(jobs)}
     result_ids_by_job = {
         job_id: job.get("result_id")
         for job_id, job in jobs_by_id.items()
@@ -553,10 +554,17 @@ def post_analysis_link(
     }
 
     with conn.cursor() as cur:
+        known_rows: dict[int, dict[str, Any]] = {}
         links: list[tuple[int, int, Confidence]] = []
         pattern_link_ranges: dict[int, tuple[int, int]] = {}
+        pattern_job_indices: dict[int, list[int]] = {}
         patterns = report.get("cross_job_patterns", []) or []
         for pattern_index, pattern in enumerate(patterns):
+            # Clear any fallback pattern_id store_report() stamped before this
+            # pattern is validated; it's only restored below once a cluster is
+            # actually confirmed and persisted, so a rejected pattern can't
+            # leave the report claiming a link the DB never got.
+            pattern.pop("pattern_id", None)
             pattern_jobs = [
                 jobs_by_id[str(job_id)]
                 for job_id in pattern.get("jobs", [])
@@ -586,12 +594,29 @@ def post_analysis_link(
             ]
             if len(pattern_result_ids) != len(pattern_jobs):
                 continue
+            pattern_member_job_indices = [
+                job_index_by_id[str(job["job_id"])]
+                for job in pattern_jobs
+                if str(job["job_id"]) in job_index_by_id
+            ]
+
+            # Every member's row must exist, or the whole pattern is dropped —
+            # a partial merge would silently leave one job out of its own cluster.
+            missing_ids = [
+                result_id for result_id in pattern_result_ids if result_id not in known_rows
+            ]
+            if missing_ids:
+                known_rows.update(_fetch_results(cur, results_table, missing_ids))
+            if any(result_id not in known_rows for result_id in pattern_result_ids):
+                continue
+
             anchor = min(pattern_result_ids)
             link_start = len(links)
             links.extend(
                 (result_id, anchor, confidence) for result_id in pattern_result_ids
             )
             pattern_link_ranges[pattern_index] = (link_start, len(links))
+            pattern_job_indices[pattern_index] = pattern_member_job_indices
 
         historical_target_ids = sorted(
             {
@@ -601,7 +626,12 @@ def post_analysis_link(
                 if match.get("matched_result_id") is not None
             }
         )
-        historical_rows = _fetch_results(cur, results_table, historical_target_ids)
+        missing_historical_ids = [
+            result_id for result_id in historical_target_ids if result_id not in known_rows
+        ]
+        if missing_historical_ids:
+            known_rows.update(_fetch_results(cur, results_table, missing_historical_ids))
+        historical_rows = known_rows
         historical_link_indices: dict[tuple[int, int], int] = {}
         for job_index, job in enumerate(jobs):
             for match_index, match in enumerate(job.get("historical_matches", []) or []):
@@ -611,6 +641,11 @@ def post_analysis_link(
                 target_row = historical_rows.get(int(matched_result_id))
                 if target_row is None:
                     continue
+                # match_source is set only by orchestrator._deterministic_historical_matches;
+                # the LLM's structured output never carries this key (_normalize_semantics
+                # builds its match dicts from a fixed set of keys that excludes it), so this
+                # can't be spoofed by free-text evidence fields the agent controls.
+                is_deterministic_fallback = match.get("match_source") == "deterministic_fallback"
                 score = score_similarity(
                     _job_summary_signals(job),
                     MatchSignals(
@@ -619,8 +654,12 @@ def post_analysis_link(
                         category=target_row.get("root_cause_category"),
                     ),
                     "post_analysis",
-                    semantic_confidence=match.get("confidence"),
-                    semantic_reasoning=match.get("similarity_reasoning"),
+                    semantic_confidence=(
+                        None if is_deterministic_fallback else match.get("confidence")
+                    ),
+                    semantic_reasoning=(
+                        None if is_deterministic_fallback else match.get("similarity_reasoning")
+                    ),
                 )
                 if score.confidence is None:
                     continue
@@ -636,8 +675,16 @@ def post_analysis_link(
             cur,
             results_table,
             links,
-            known_rows=historical_rows,
+            known_rows=known_rows,
         )
+        source_match_result_ids: dict[int, int] = {}
+
+        def register_source_anchor(job_index: int, anchor: int) -> None:
+            current_anchor = source_match_result_ids.get(job_index)
+            source_match_result_ids[job_index] = (
+                anchor if current_anchor is None else min(current_anchor, anchor)
+            )
+
         for pattern_index, (link_start, link_end) in pattern_link_ranges.items():
             pattern = report["cross_job_patterns"][pattern_index]
             assigned = canonical_anchors[link_start:link_end]
@@ -647,8 +694,15 @@ def post_analysis_link(
                 anchor for anchor in assigned if anchor is not None
             )
             pattern["pattern_id"] = str(pattern_anchor)
+            # Jobs linked only through a same-batch pattern (no historical
+            # match) still need their source-table FK repointed to the
+            # cluster anchor, the same as a historical-matched job gets below.
+            for job_index, canonical_anchor in zip(
+                pattern_job_indices[pattern_index], assigned
+            ):
+                if canonical_anchor is not None:
+                    register_source_anchor(job_index, canonical_anchor)
 
-        source_match_result_ids: dict[int, int] = {}
         for (job_index, match_index), link_index in historical_link_indices.items():
             canonical_anchor = canonical_anchors[link_index]
             if canonical_anchor is None:
@@ -656,12 +710,7 @@ def post_analysis_link(
             job = jobs[job_index]
             match = job["historical_matches"][match_index]
             match["pattern_id"] = str(canonical_anchor)
-            current_anchor = source_match_result_ids.get(job_index)
-            source_match_result_ids[job_index] = (
-                canonical_anchor
-                if current_anchor is None
-                else min(current_anchor, canonical_anchor)
-            )
+            register_source_anchor(job_index, canonical_anchor)
 
         for job_index, source_match_result_id in source_match_result_ids.items():
             job_id = str(jobs[job_index].get("job_id", ""))

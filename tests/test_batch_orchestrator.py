@@ -688,6 +688,55 @@ def test_normalize_semantics_marks_ambiguous_pattern_low() -> None:
     assert cross_pattern["confidence"] == "low"
 
 
+def test_normalize_semantics_picks_numeric_min_pattern_id() -> None:
+    # Real pattern_ids (fetch_known_issues) are numeric result ids as strings;
+    # a lexicographic min would wrongly pick "100" over "9" here.
+    summaries = [
+        {"job_id": "job-1", "status": "analyzed", "confidence": "high"},
+        {"job_id": "job-2", "status": "analyzed", "confidence": "high"},
+    ]
+    known_issues = [
+        {"result_id": 9, "recurrence_count": 1, "pattern_id": "9"},
+        {"result_id": 100, "recurrence_count": 1, "pattern_id": "100"},
+    ]
+    output = {
+        "historical_matches": [
+            {
+                "job_id": "job-1",
+                "matches": [
+                    {
+                        "matched_result_id": 9,
+                        "similarity_reasoning": "Same failure mode.",
+                        "confidence": "high",
+                    }
+                ],
+            },
+            {
+                "job_id": "job-2",
+                "matches": [
+                    {
+                        "matched_result_id": 100,
+                        "similarity_reasoning": "Same failure mode.",
+                        "confidence": "high",
+                    }
+                ],
+            },
+        ],
+        "cross_job_patterns": [
+            {
+                "pattern": "ambiguous failure",
+                "jobs": ["job-1", "job-2"],
+                "description": "The jobs share a failure mode.",
+                "confidence": "high",
+            }
+        ],
+    }
+
+    normalized = orchestrator._normalize_semantics(output, summaries, known_issues)
+
+    assert normalized["cross_job_patterns"][0]["pattern_id"] == "9"
+
+
 def test_aggregate_semantics_uses_packaged_output_schema(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -782,6 +831,7 @@ def test_semantic_failure_falls_back_to_deterministic_matching(
             "similarity_reasoning": "Deterministic root-cause summary similarity is 100%.",
             "pattern_id": "9",
             "confidence": "high",
+            "match_source": "deterministic_fallback",
             "evidence": [
                 {
                     "statement_type": "observed",
@@ -791,6 +841,26 @@ def test_semantic_failure_falls_back_to_deterministic_matching(
             ],
         }
     ]
+
+
+def test_deterministic_historical_matches_tolerates_malformed_known_issue() -> None:
+    summary = {
+        "job_id": "201",
+        "status": "analyzed",
+        "catalog_item": "widget",
+        "root_cause_category": "infrastructure",
+        "root_cause_summary": "Worker 7 timed out.",
+    }
+    malformed_known_issue = {
+        "result_id": "not-an-int",
+        "catalog_item": "widget",
+        "root_cause_category": "infrastructure",
+        "root_cause_summary": "Worker 7 timed out.",
+    }
+
+    orchestrator._deterministic_historical_matches([summary], [malformed_known_issue])
+
+    assert summary["historical_matches"] == []
 
 
 def test_empty_semantic_match_falls_back_to_deterministic_matching(

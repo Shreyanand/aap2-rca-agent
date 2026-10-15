@@ -37,6 +37,12 @@ CREATE TABLE aap2_job_results (
     UNIQUE (batch_id, job_id)
 );
 
+-- post_analysis_link's _resolved_anchors/_assign_clusters walk and lock
+-- clusters via `WHERE related_result_id = ANY(%s) FOR UPDATE`; without this
+-- index that's a sequential scan under a row lock on every batch.
+CREATE INDEX aap2_job_results_related_result_id_idx
+    ON aap2_job_results(related_result_id);
+
 
 -- Changes from what the code uses today:
 --
@@ -67,6 +73,8 @@ CREATE TABLE aap2_job_results (
 --     ADD COLUMN IF NOT EXISTS related_result_confidence TEXT;
 -- ALTER TABLE aap2_job_results
 --     ADD CONSTRAINT aap2_job_results_batch_id_job_id_key UNIQUE (batch_id, job_id);
+-- CREATE INDEX IF NOT EXISTS aap2_job_results_related_result_id_idx
+--     ON aap2_job_results(related_result_id);
 --
 -- Backfill required: existing rows have root_cause_summary but no
 -- root_cause JSONB. Every query that now reads root_cause->>'summary'
