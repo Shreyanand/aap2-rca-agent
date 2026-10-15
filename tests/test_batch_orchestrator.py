@@ -730,6 +730,115 @@ def test_aggregate_semantics_uses_packaged_output_schema(
     }
 
 
+def test_semantic_failure_falls_back_to_deterministic_matching(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    artifacts = AnalysisArtifacts(
+        job_id="201",
+        analysis_dir=tmp_path / "201",
+        job_context={"job_name": "RHPDS a.widget.dev-201-create"},
+        splunk_logs={},
+        correlation={},
+        github_fetch_history={},
+    )
+    execution = orchestrator.JobExecution(
+        job_id="201",
+        status="completed",
+        duration_ms=100,
+        artifacts=artifacts,
+        summary={
+            "catalog_item": "widget",
+            "root_cause": {
+                "summary": "Worker 7 timed out.",
+                "category": "infrastructure",
+                "confidence": "high",
+            },
+        },
+    )
+    known_issue = {
+        "result_id": 9,
+        "catalog_item": "widget",
+        "root_cause_category": "infrastructure",
+        "root_cause_summary": "Worker 7 timed out.",
+        "recurrence_count": 2,
+        "pattern_id": "9",
+    }
+    monkeypatch.setattr(
+        orchestrator,
+        "_aggregate_semantics",
+        AsyncMock(side_effect=RuntimeError("semantic unavailable")),
+    )
+
+    summaries, cross_patterns, aggregation_result = orchestrator._run_agent_batch(
+        [execution], [known_issue], _config(tmp_path), cwd=tmp_path
+    )
+
+    assert cross_patterns == []
+    assert aggregation_result is None
+    assert summaries[0]["historical_matches"] == [
+        {
+            "matched_result_id": 9,
+            "recurrence_count": 2,
+            "similarity_reasoning": "Deterministic root-cause summary similarity is 100%.",
+            "pattern_id": "9",
+            "confidence": "high",
+            "evidence": [
+                {
+                    "statement_type": "observed",
+                    "description": "The root-cause summaries are 100% similar.",
+                    "source": "deterministic_fallback",
+                }
+            ],
+        }
+    ]
+
+
+def test_empty_semantic_match_falls_back_to_deterministic_matching(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    artifacts = AnalysisArtifacts(
+        job_id="201",
+        analysis_dir=tmp_path / "201",
+        job_context={"job_name": "RHPDS a.widget.dev-201-create"},
+        splunk_logs={},
+        correlation={},
+        github_fetch_history={},
+    )
+    execution = orchestrator.JobExecution(
+        job_id="201",
+        status="completed",
+        duration_ms=100,
+        artifacts=artifacts,
+        summary={
+            "catalog_item": "widget",
+            "root_cause": {
+                "summary": "Worker 7 timed out.",
+                "category": "infrastructure",
+                "confidence": "high",
+            },
+        },
+    )
+    known_issue = {
+        "result_id": 9,
+        "catalog_item": "widget",
+        "root_cause_category": "infrastructure",
+        "root_cause_summary": "Worker 7 timed out.",
+    }
+    monkeypatch.setattr(
+        orchestrator,
+        "_aggregate_semantics",
+        AsyncMock(return_value=([], None)),
+    )
+
+    summaries, cross_patterns, aggregation_result = orchestrator._run_agent_batch(
+        [execution], [known_issue], _config(tmp_path), cwd=tmp_path
+    )
+
+    assert cross_patterns == []
+    assert aggregation_result is None
+    assert summaries[0]["historical_matches"][0]["matched_result_id"] == 9
+
+
 def test_report_aggregation_is_deterministic(tmp_path: Path) -> None:
     first_artifacts = AnalysisArtifacts(
         job_id="201",

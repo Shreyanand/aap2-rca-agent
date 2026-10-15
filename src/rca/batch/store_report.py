@@ -316,22 +316,7 @@ def _job_summary_signals(job: dict[str, Any]) -> MatchSignals:
     )
 
 
-def _fetch_result(
-    cur: Any, results_table: str, result_id: int
-) -> dict[str, Any] | None:
-    cur.execute(
-        psycopg2.sql.SQL(
-            """SELECT id, catalog_item, root_cause_category,
-                      root_cause->>'summary' AS root_cause_summary,
-                      related_result_id, related_result_confidence
-               FROM {} WHERE id = %s
-               FOR UPDATE"""
-        ).format(psycopg2.sql.Identifier(results_table)),
-        (result_id,),
-    )
-    row = cur.fetchone()
-    if row is None:
-        return None
+def _row_dict(row: Any) -> dict[str, Any]:
     if isinstance(row, Mapping):
         return dict(row)
     return {
@@ -344,82 +329,208 @@ def _fetch_result(
     }
 
 
-def _resolved_anchor(cur: Any, results_table: str, row: dict[str, Any]) -> int:
-    current_id = int(row["id"])
-    candidate = row.get("related_result_id")
-    seen: set[int] = set()
-    while candidate is not None and int(candidate) not in seen:
-        seen.add(int(candidate))
-        anchor_row = _fetch_result(cur, results_table, int(candidate))
-        if anchor_row is None:
-            return current_id
-        current_id = int(anchor_row["id"])
-        candidate = anchor_row.get("related_result_id")
-    return current_id
+def _fetch_results(
+    cur: Any, results_table: str, result_ids: list[int]
+) -> dict[int, dict[str, Any]]:
+    unique_ids = sorted({int(result_id) for result_id in result_ids})
+    if not unique_ids:
+        return {}
 
-
-def _assign_cluster(
-    cur: Any,
-    results_table: str,
-    result_ids: list[int],
-    target_anchor: int,
-    confidence: Confidence,
-) -> int:
-    existing_rows = [_fetch_result(cur, results_table, result_id) for result_id in result_ids]
-    if any(row is None for row in existing_rows):
-        return target_anchor
-
-    existing_anchors = {
-        _resolved_anchor(cur, results_table, row)
-        for row in existing_rows
-        if row is not None
-    }
-    existing_anchors.add(target_anchor)
-    canonical_anchor = min(existing_anchors)
-    affected_ids = set(result_ids)
     cur.execute(
         psycopg2.sql.SQL(
-            """SELECT id, related_result_confidence
+            """SELECT id, catalog_item, root_cause_category,
+                      root_cause->>'summary' AS root_cause_summary,
+                      related_result_id, related_result_confidence
+               FROM {} WHERE id = ANY(%s)
+               FOR UPDATE"""
+        ).format(psycopg2.sql.Identifier(results_table)),
+        (unique_ids,),
+    )
+    rows = [_row_dict(row) for row in cur.fetchall()]
+    return {int(row["id"]): row for row in rows}
+
+
+def _resolved_anchors(
+    cur: Any,
+    results_table: str,
+    rows: list[dict[str, Any]],
+    known_rows: dict[int, dict[str, Any]] | None = None,
+) -> dict[int, int]:
+    states: dict[int, dict[str, Any]] = {
+        int(row["id"]): {
+            "anchor": int(row["id"]),
+            "candidate": row.get("related_result_id"),
+            "seen": {int(row["id"])},
+        }
+        for row in rows
+    }
+    row_cache = dict(known_rows or {})
+
+    while True:
+        candidate_ids = sorted(
+            {
+                int(state["candidate"])
+                for state in states.values()
+                if state["candidate"] is not None
+            }
+        )
+        if not candidate_ids:
+            break
+
+        missing_ids = [result_id for result_id in candidate_ids if result_id not in row_cache]
+        row_cache.update(_fetch_results(cur, results_table, missing_ids))
+        advanced = False
+        for state in states.values():
+            candidate = state["candidate"]
+            if candidate is None:
+                continue
+            candidate_id = int(candidate)
+            anchor_row = row_cache.get(candidate_id)
+            if anchor_row is None or candidate_id in state["seen"]:
+                state["candidate"] = None
+                advanced = True
+                continue
+
+            anchor_id = int(anchor_row["id"])
+            state["anchor"] = anchor_id
+            state["candidate"] = anchor_row.get("related_result_id")
+            state["seen"].add(anchor_id)
+            advanced = True
+
+        if not advanced:
+            break
+
+    return {
+        result_id: int(state["anchor"]) for result_id, state in states.items()
+    }
+
+
+def _assign_clusters(
+    cur: Any,
+    results_table: str,
+    links: list[tuple[int, int, Confidence]],
+    known_rows: dict[int, dict[str, Any]] | None = None,
+) -> list[int | None]:
+    if not links:
+        return []
+
+    lookup_ids = {
+        int(result_id)
+        for source_result_id, target_result_id, _ in links
+        for result_id in (source_result_id, target_result_id)
+    }
+    existing_rows = dict(known_rows or {})
+    missing_ids = sorted(lookup_ids - set(existing_rows))
+    existing_rows.update(_fetch_results(cur, results_table, missing_ids))
+    resolved_anchors = _resolved_anchors(
+        cur, results_table, list(existing_rows.values()), known_rows=existing_rows
+    )
+
+    parent: dict[int, int] = {}
+    confidences: dict[int, Confidence] = {}
+
+    def find(result_id: int) -> int:
+        parent.setdefault(result_id, result_id)
+        root = result_id
+        while parent[root] != root:
+            root = parent[root]
+        while parent[result_id] != root:
+            parent[result_id], result_id = root, parent[result_id]
+        return root
+
+    def merge_confidence(anchor: int, confidence: Confidence) -> None:
+        root = find(anchor)
+        current = confidences.get(root)
+        confidences[root] = (
+            confidence
+            if current is None
+            else weakest_confidence([current, confidence]) or current
+        )
+
+    assigned_anchors: list[int | None] = [None] * len(links)
+    valid_link_indices: set[int] = set()
+    for index, (source_result_id, target_result_id, confidence) in enumerate(links):
+        if source_result_id not in existing_rows or target_result_id not in existing_rows:
+            continue
+
+        valid_link_indices.add(index)
+        source_root = find(resolved_anchors[source_result_id])
+        target_root = find(resolved_anchors[target_result_id])
+        if source_root != target_root:
+            source_confidence = confidences.pop(source_root, None)
+            target_confidence = confidences.pop(target_root, None)
+            canonical_root = min(source_root, target_root)
+            parent[source_root] = canonical_root
+            parent[target_root] = canonical_root
+            parent[canonical_root] = canonical_root
+            for existing_confidence in (source_confidence, target_confidence):
+                if existing_confidence is not None:
+                    merge_confidence(canonical_root, existing_confidence)
+
+        merge_confidence(source_root, confidence)
+        assigned_anchors[index] = source_root
+
+    if not valid_link_indices:
+        return assigned_anchors
+
+    existing_anchors = {
+        resolved_anchors[result_id]
+        for index in valid_link_indices
+        for result_id in links[index][:2]
+    }
+    cur.execute(
+        psycopg2.sql.SQL(
+            """SELECT id, related_result_id, related_result_confidence
                FROM {}
                WHERE id = ANY(%s) OR related_result_id = ANY(%s)
                FOR UPDATE"""
         ).format(psycopg2.sql.Identifier(results_table)),
         (
-            sorted(result_ids),
+            sorted(existing_anchors),
             sorted(existing_anchors),
         ),
     )
     for row in cur.fetchall():
-        row_id = row["id"] if isinstance(row, Mapping) else row[0]
+        row_id = int(row["id"] if isinstance(row, Mapping) else row[0])
+        row_anchor = row.get("related_result_id") if isinstance(row, Mapping) else row[1]
         row_confidence = (
             row.get("related_result_confidence")
             if isinstance(row, Mapping)
-            else row[1]
+            else row[2]
         )
-        affected_ids.add(int(row_id))
         if row_confidence in ("high", "medium", "low"):
-            confidence = weakest_confidence(
-                [confidence, row_confidence]
-            ) or confidence
+            merge_confidence(int(row_anchor or row_id), row_confidence)
+
+    old_anchors = sorted(existing_anchors)
+    canonical_anchors = [find(anchor) for anchor in old_anchors]
+    confidence_values = [
+        confidences.get(find(anchor), "low") for anchor in old_anchors
+    ]
 
     cur.execute(
         psycopg2.sql.SQL(
-            """UPDATE {}
-               SET related_result_id = CASE WHEN id = %s THEN NULL ELSE %s END,
+            """UPDATE {} AS result
+               SET related_result_id =
+                       CASE WHEN result.id = cluster.canonical
+                            THEN NULL ELSE cluster.canonical END,
                    related_result_confidence =
-                       CASE WHEN id = %s THEN NULL ELSE %s END
-               WHERE id = ANY(%s) OR related_result_id = ANY(%s)"""
+                       CASE WHEN result.id = cluster.canonical
+                            THEN NULL ELSE cluster.confidence END
+               FROM unnest(%s::int[], %s::int[], %s::text[])
+                   AS cluster(old_anchor, canonical, confidence)
+               WHERE result.related_result_id = cluster.old_anchor
+                  OR result.id = cluster.old_anchor"""
         ).format(psycopg2.sql.Identifier(results_table)),
         (
-            canonical_anchor,
-            canonical_anchor,
-            canonical_anchor,
-            confidence,
-            sorted(affected_ids),
-            sorted(existing_anchors),
+            old_anchors,
+            canonical_anchors,
+            confidence_values,
         ),
     )
-    return canonical_anchor
+    for index, (source_result_id, _, _) in enumerate(links):
+        if index in valid_link_indices:
+            assigned_anchors[index] = find(resolved_anchors[source_result_id])
+    return assigned_anchors
 
 
 def post_analysis_link(
@@ -442,7 +553,10 @@ def post_analysis_link(
     }
 
     with conn.cursor() as cur:
-        for pattern in report.get("cross_job_patterns", []) or []:
+        links: list[tuple[int, int, Confidence]] = []
+        pattern_link_ranges: dict[int, tuple[int, int]] = {}
+        patterns = report.get("cross_job_patterns", []) or []
+        for pattern_index, pattern in enumerate(patterns):
             pattern_jobs = [
                 jobs_by_id[str(job_id)]
                 for job_id in pattern.get("jobs", [])
@@ -473,25 +587,28 @@ def post_analysis_link(
             if len(pattern_result_ids) != len(pattern_jobs):
                 continue
             anchor = min(pattern_result_ids)
-            canonical_anchor = _assign_cluster(
-                cur,
-                results_table,
-                pattern_result_ids,
-                anchor,
-                confidence,
+            link_start = len(links)
+            links.extend(
+                (result_id, anchor, confidence) for result_id in pattern_result_ids
             )
-            pattern["pattern_id"] = str(canonical_anchor)
+            pattern_link_ranges[pattern_index] = (link_start, len(links))
 
-        for job in jobs:
-            job_id = str(job.get("job_id", ""))
-            if not job_id:
-                continue
-            source_match_result_id: int | None = None
-            for match in job.get("historical_matches", []) or []:
+        historical_target_ids = sorted(
+            {
+                int(match["matched_result_id"])
+                for job in jobs
+                for match in job.get("historical_matches", []) or []
+                if match.get("matched_result_id") is not None
+            }
+        )
+        historical_rows = _fetch_results(cur, results_table, historical_target_ids)
+        historical_link_indices: dict[tuple[int, int], int] = {}
+        for job_index, job in enumerate(jobs):
+            for match_index, match in enumerate(job.get("historical_matches", []) or []):
                 matched_result_id = match.get("matched_result_id")
                 if matched_result_id is None:
                     continue
-                target_row = _fetch_result(cur, results_table, int(matched_result_id))
+                target_row = historical_rows.get(int(matched_result_id))
                 if target_row is None:
                     continue
                 score = score_similarity(
@@ -510,26 +627,54 @@ def post_analysis_link(
                 result_id = job.get("result_id")
                 if result_id is None:
                     continue
-                target_anchor = _resolved_anchor(cur, results_table, target_row)
-                if source_match_result_id is None:
-                    source_match_result_id = target_anchor
-                canonical_anchor = _assign_cluster(
-                    cur,
-                    results_table,
-                    [int(result_id)],
-                    target_anchor,
-                    score.confidence,
+                historical_link_indices[(job_index, match_index)] = len(links)
+                links.append(
+                    (int(result_id), int(matched_result_id), score.confidence)
                 )
-                match["pattern_id"] = str(canonical_anchor)
-            if source_match_result_id is not None:
-                cur.execute(
-                    psycopg2.sql.SQL(
-                        """UPDATE {}
-                           SET aap2_job_results_fk_id = %s, ai_processed = TRUE
-                           WHERE job_id = %s"""
-                    ).format(psycopg2.sql.Identifier(source_table)),
-                    (source_match_result_id, job_id),
-                )
+
+        canonical_anchors = _assign_clusters(
+            cur,
+            results_table,
+            links,
+            known_rows=historical_rows,
+        )
+        for pattern_index, (link_start, link_end) in pattern_link_ranges.items():
+            pattern = report["cross_job_patterns"][pattern_index]
+            assigned = canonical_anchors[link_start:link_end]
+            if not assigned or any(anchor is None for anchor in assigned):
+                continue
+            pattern_anchor = min(
+                anchor for anchor in assigned if anchor is not None
+            )
+            pattern["pattern_id"] = str(pattern_anchor)
+
+        source_match_result_ids: dict[int, int] = {}
+        for (job_index, match_index), link_index in historical_link_indices.items():
+            canonical_anchor = canonical_anchors[link_index]
+            if canonical_anchor is None:
+                continue
+            job = jobs[job_index]
+            match = job["historical_matches"][match_index]
+            match["pattern_id"] = str(canonical_anchor)
+            current_anchor = source_match_result_ids.get(job_index)
+            source_match_result_ids[job_index] = (
+                canonical_anchor
+                if current_anchor is None
+                else min(current_anchor, canonical_anchor)
+            )
+
+        for job_index, source_match_result_id in source_match_result_ids.items():
+            job_id = str(jobs[job_index].get("job_id", ""))
+            if not job_id:
+                continue
+            cur.execute(
+                psycopg2.sql.SQL(
+                    """UPDATE {}
+                       SET aap2_job_results_fk_id = %s, ai_processed = TRUE
+                       WHERE job_id = %s"""
+                ).format(psycopg2.sql.Identifier(source_table)),
+                (source_match_result_id, job_id),
+            )
 
     if commit:
         conn.commit()

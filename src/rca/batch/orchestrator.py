@@ -27,6 +27,7 @@ from psycopg2.pool import ThreadedConnectionPool
 from rca.analysis.jumpbox_io import upload_to_jumpbox
 from rca.analysis.pipeline import AnalysisArtifacts, run_analysis
 from rca.batch.fetch_known_issues import fetch_known_issues
+from rca.batch.match import text_similarity
 from rca.batch.pre_filter_jobs import (
     fetch_job_metadata,
     fetch_recent_results,
@@ -47,6 +48,7 @@ logger = logging.getLogger("rca.batch")
 
 DEFAULT_LOOKBACK_HOURS = 4
 DEFAULT_KNOWN_ISSUE_LIMIT = 50
+DETERMINISTIC_MATCH_THRESHOLD = 0.85
 _PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 _CATEGORY_NAMES = {
     "application_bug": "Application bug",
@@ -719,6 +721,62 @@ def _confidence(value: Any) -> str:
     return candidate if candidate in _VALID_CONFIDENCE else "low"
 
 
+def _deterministic_historical_matches(
+    job_summaries: list[dict[str, Any]], known_issues: list[dict[str, Any]]
+) -> None:
+    for summary in job_summaries:
+        if summary.get("status") != "analyzed":
+            continue
+
+        category = summary.get("root_cause_category")
+        catalog_item = summary.get("catalog_item")
+        summary_text = summary.get("root_cause_summary")
+        best_issue: dict[str, Any] | None = None
+        best_similarity = DETERMINISTIC_MATCH_THRESHOLD
+
+        for issue in known_issues:
+            if category is None or catalog_item is None:
+                break
+            if issue.get("root_cause_category") != category:
+                continue
+            if issue.get("catalog_item") != catalog_item:
+                continue
+
+            similarity = text_similarity(summary_text, issue.get("root_cause_summary"))
+            if similarity < best_similarity:
+                continue
+
+            best_issue = issue
+            best_similarity = similarity
+
+        if best_issue is None:
+            summary["historical_matches"] = []
+            continue
+
+        result_id = int(best_issue["result_id"])
+        recurrence_count = max(1, int(best_issue.get("recurrence_count", 1)))
+        summary["historical_matches"] = [
+            {
+                "matched_result_id": result_id,
+                "recurrence_count": recurrence_count,
+                "similarity_reasoning": (
+                    f"Deterministic root-cause summary similarity is {best_similarity:.0%}."
+                ),
+                "pattern_id": str(best_issue.get("pattern_id") or result_id),
+                "confidence": "high",
+                "evidence": [
+                    {
+                        "statement_type": "observed",
+                        "description": (
+                            f"The root-cause summaries are {best_similarity:.0%} similar."
+                        ),
+                        "source": "deterministic_fallback",
+                    }
+                ],
+            }
+        ]
+
+
 def _category(value: Any) -> str:
     candidate = str(value or "").lower()
     candidate = _CATEGORY_ALIASES.get(candidate, candidate)
@@ -1144,6 +1202,7 @@ def _run_agent_batch(
     ]
     report_summaries = [_job_summary(execution) for execution in executions]
     semaphore = asyncio.Semaphore(config.max_parallel_jobs)
+    semantic_aggregation_failed = False
     try:
         cross_patterns, aggregation_result = asyncio.run(
             _aggregate_semantics(
@@ -1155,15 +1214,27 @@ def _run_agent_batch(
             )
         )
     except Exception as exc:
-        logger.warning("Semantic batch aggregation failed; using deterministic report only: %s", exc)
+        semantic_aggregation_failed = True
+        logger.warning(
+            "Semantic batch aggregation failed; using deterministic historical matching: %s",
+            exc,
+        )
         cross_patterns = []
         aggregation_result = None
+
+    if semantic_aggregation_failed:
+        _deterministic_historical_matches(successful_summaries, known_issues)
+    else:
         for summary in successful_summaries:
-            summary["historical_matches"] = []
+            if not summary.get("historical_matches"):
+                _deterministic_historical_matches([summary], known_issues)
 
     # Reuse the semantic matches on the report copies. The successful summaries
     # were normalized in place by _aggregate_semantics.
-    matches = {item["job_id"]: item.get("historical_matches", []) for item in successful_summaries}
+    matches = {
+        item["job_id"]: item.get("historical_matches", [])
+        for item in successful_summaries
+    }
     for summary in report_summaries:
         summary["historical_matches"] = matches.get(summary["job_id"], [])
     return report_summaries, cross_patterns, aggregation_result

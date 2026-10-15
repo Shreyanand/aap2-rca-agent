@@ -61,6 +61,11 @@ CREATE TABLE aap2_job_results (
 --
 -- ALTER TABLE aap2_job_results ADD COLUMN IF NOT EXISTS root_cause JSONB;
 -- ALTER TABLE aap2_job_results
+--     ADD COLUMN IF NOT EXISTS related_result_id
+--         INTEGER REFERENCES aap2_job_results(id);
+-- ALTER TABLE aap2_job_results
+--     ADD COLUMN IF NOT EXISTS related_result_confidence TEXT;
+-- ALTER TABLE aap2_job_results
 --     ADD CONSTRAINT aap2_job_results_batch_id_job_id_key UNIQUE (batch_id, job_id);
 --
 -- Backfill required: existing rows have root_cause_summary but no

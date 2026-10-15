@@ -117,8 +117,7 @@ def test_post_analysis_link_persists_derived_pattern_id() -> None:
             "related_result_confidence": None,
         },
     ]
-    cursor.fetchone.side_effect = result_rows + result_rows
-    cursor.fetchall.return_value = result_rows
+    cursor.fetchall.side_effect = [result_rows, result_rows]
     report = {
         "batch_id": "batch_test",
         "job_summaries": [
@@ -157,14 +156,7 @@ def test_post_analysis_link_persists_derived_pattern_id() -> None:
 
     update_params = [call.args[1] for call in cursor.execute.call_args_list if len(call.args) > 1]
     assert any(
-        len(params) >= 6
-        and
-        params[0] == 42
-        and params[1] == 42
-        and params[2] == 42
-        and params[3] == "high"
-        and params[4] == [42, 43]
-        and params[5] == [42, 43]
+        params == ([42, 43], [42, 42], ["high", "high"])
         for params in update_params
     )
     assert report["cross_job_patterns"][0]["pattern_id"] == "42"
@@ -337,8 +329,11 @@ def test_post_analysis_link_updates_a_null_anchor_historical_row() -> None:
         "related_result_id": None,
         "related_result_confidence": None,
     }
-    cursor.fetchone.side_effect = [target_row, current_row]
-    cursor.fetchall.return_value = [current_row]
+    cursor.fetchall.side_effect = [
+        [target_row],
+        [target_row, current_row],
+        [current_row],
+    ]
     report = {
         "batch_id": "batch_test",
         "job_summaries": [
@@ -367,15 +362,42 @@ def test_post_analysis_link_updates_a_null_anchor_historical_row() -> None:
 
     update_params = [call.args[1] for call in cursor.execute.call_args_list if len(call.args) > 1]
     assert any(
-        len(params) >= 6
-        and
-        params[0] == 50
-        and params[1] == 50
-        and params[2] == 50
-        and params[3] == "high"
-        and params[4] == [100]
-        and params[5] == [50, 100]
+        params == ([50, 100], [50, 50], ["high", "high"])
         for params in update_params
     )
     assert (50, "123") in update_params
     assert report["job_summaries"][0]["historical_matches"][0]["pattern_id"] == "50"
+
+
+def test_post_analysis_link_does_not_claim_a_missing_result() -> None:
+    connection, cursor = _connection_and_cursor()
+    cursor.fetchall.return_value = []
+    report = {
+        "batch_id": "batch_test",
+        "job_summaries": [
+            {
+                "job_id": "123",
+                "status": "analyzed",
+                "result_id": 100,
+                "catalog_item": "widget",
+                "root_cause_category": "infrastructure",
+                "root_cause_summary": "Worker 7 timed out.",
+                "historical_matches": [
+                    {
+                        "matched_result_id": 50,
+                        "recurrence_count": 2,
+                        "similarity_reasoning": "Both jobs time out in worker 7.",
+                        "confidence": "high",
+                    }
+                ],
+            }
+        ],
+    }
+
+    store_report.post_analysis_link(
+        connection, {"results_table": "results", "source_table": "events"}, report
+    )
+
+    update_params = [call.args[1] for call in cursor.execute.call_args_list if len(call.args) > 1]
+    assert update_params == [([50],)]
+    assert "pattern_id" not in report["job_summaries"][0]["historical_matches"][0]
