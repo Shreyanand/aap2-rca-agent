@@ -5,7 +5,7 @@ flowchart TD
     B -->|cluster dupes| C{"skip_targets?
 high-confidence match"}
     C -->|yes| D["store_pre_matched()
-UPDATE source_table FK"]
+UPDATE aap2_events FK"]
     C -->|no| E["_analyze_jobs()
 fetch logs, run analysis"]
 
@@ -25,13 +25,13 @@ begin transaction"]
     subgraph TXN["One Transaction"]
         direction TB
         J["1. store_report()
-INSERT results_table
-UPDATE source_table FK"]
+INSERT aap2_job_results
+UPDATE aap2_events FK"]
         K["2. post_analysis_link()
 score pairs, _assign_cluster()
-UPDATE results_table"]
+UPDATE aap2_job_results"]
         M["3. link_intra_batch_dupes()
-UPDATE source_table FK"]
+UPDATE aap2_events FK"]
         J --> K --> M
     end
 
@@ -39,9 +39,9 @@ UPDATE source_table FK"]
     M --> Z["conn.commit()"]
 
     subgraph DB["Postgres"]
-        S[("source_table
+        S[("aap2_events
 aap2_job_results_fk_id")]
-        R[("results_table
+        R[("aap2_job_results
 root_cause, pattern_id")]
     end
 
