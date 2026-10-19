@@ -1,0 +1,53 @@
+flowchart TD
+    A["run_batch()"] --> B["pre_analysis_gate()
+(score_similarity 'pre_analysis')"]
+
+    B -->|cluster dupes| C{"skip_targets?
+high-confidence match"}
+    C -->|yes| D["store_pre_matched()
+UPDATE source_table FK"]
+    C -->|no| E["_analyze_jobs()
+fetch logs, run analysis"]
+
+    E -->|fails| F["_recover_failed_representatives()
+retry duplicates"]
+    F -->|success| E
+    E -->|complete| G["_aggregate_semantics()
+LLM: historical_matches
++ cross_job_patterns"]
+
+    G --> H["_build_report()
+validate & write"]
+
+    H --> I["_store_batch_report()
+begin transaction"]
+
+    subgraph TXN["One Transaction"]
+        direction TB
+        J["1. store_report()
+INSERT results_table
+UPDATE source_table FK"]
+        K["2. post_analysis_link()
+score pairs, _assign_cluster()
+UPDATE results_table"]
+        M["3. link_intra_batch_dupes()
+UPDATE source_table FK"]
+        J --> K --> M
+    end
+
+    I --> J
+    M --> Z["conn.commit()"]
+
+    subgraph DB["Postgres"]
+        S[("source_table
+aap2_job_results_fk_id")]
+        R[("results_table
+root_cause, pattern_id")]
+    end
+
+    D -->|"UPDATE"| S
+    J -.->|"write"| R
+    K -.->|"update"| R
+    M -.->|"UPDATE"| S
+    Z ==>|"commit"| S
+    Z ==>|"commit"| R
