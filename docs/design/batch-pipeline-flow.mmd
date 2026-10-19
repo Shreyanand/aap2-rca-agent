@@ -12,12 +12,13 @@ fetch logs, run analysis"]
     E -->|fails| F["_recover_failed_representatives()
 retry duplicates"]
     F -->|success| E
-    E -->|complete| G["_aggregate_semantics()
-LLM: historical_matches
-+ cross_job_patterns"]
+    E -->|complete| G["_run_agent_batch()
+LLM _aggregate_semantics()
+(falls back to deterministic
+matching on failure/no match)"]
 
-    G --> H["_build_report()
-validate & write"]
+    G --> H["_build_report() / _write_report()
+validate & write JSON"]
 
     H --> I["_store_batch_report()
 begin transaction"]
@@ -28,7 +29,7 @@ begin transaction"]
 INSERT aap2_job_results
 UPDATE aap2_events FK"]
         K["2. post_analysis_link()
-score pairs, _assign_cluster()
+score pairs, _assign_clusters()
 UPDATE aap2_job_results"]
         M["3. link_intra_batch_dupes()
 UPDATE aap2_events FK"]
